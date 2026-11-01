@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Melvor Idle 2 Companion</title>
+  <link rel="icon" id="favicon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%238f6210'/%3E%3Ctext x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='700'%3EM%3C/text%3E%3C/svg%3E">
+  <script>
+    // Apply the saved theme before the first paint.
+    try {
+      const theme = JSON.parse(localStorage.getItem('melvor-companion:theme'));
+      if (theme && theme !== 'system') document.documentElement.dataset.theme = theme;
+    } catch {}
+  </script>
+  <link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/overview"><span class="brand-mark" id="brand-mark" aria-hidden="true">M</span>Melvor Idle 2 Companion</a>
+    <div class="savebar" id="savebar"></div>
+    <div class="heartbeat" aria-hidden="true"><span id="heartbeat"></span></div>
+  </header>
+  <div class="layout">
+    <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+    <main id="view" tabindex="-1"><p class="loading">Loading game data…</p></main>
+  </div>
+  <div class="toasts" id="toasts" role="status" aria-live="polite"></div>
+  <script type="module" src="/ui/app.js"></script>
+</body>
+</html>

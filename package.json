@@ -1,0 +1,23 @@
+{
+  "name": "melvor-idle-2-companion",
+  "version": "0.3.0",
+  "description": "Standalone companion for Melvor Idle 2: reads your save and tells you the most efficient things to do. No account or internet needed.",
+  "type": "module",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/badoomtch/melvor-idle-2-companion.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server/server.js",
+    "build-data": "node tools/build-data.js",
+    "demo": "node tools/make-demo-save.js && node server/server.js --saves demo-saves",
+    "test": "node --test \"test/*.test.js\"",
+    "build-exe": "node tools/build-exe.js",
+    "report": "node tools/data-report.js",
+    "compare": "node tools/compare-builds.js"
+  }
+}

@@ -1,0 +1,195 @@
+// A route you follow stays put: it's planned once and saved, and each autosave only moves its progress
+// on. Everything is read from your save: a training step is done when your XP gets to where it ends; a
+// gathering step when you have what it was meant to leave you with, or when your bank already covers
+// everything still to do that uses its item (you did things in another order, already had them, or what
+// needed them is done). Training done means the rest of that goal before it is done too. Once done, a
+// step stays done, even when a later step uses up what it made. Isomorphic.
+import { minEach } from './advisor.js';
+import { computeRates } from './rates.js';
+
+// The route as plain data to keep between autosaves: methods by key.
+export function lockRoute(route, { madeAt = Date.now(), speed = null } = {}) {
+  return {
+    madeAt,
+    // Your measured speed at each method when it was planned: times left keep using it.
+    speed: speed && Object.keys(speed).length ? { ...speed } : null,
+    decisions: route.decisions ?? null,
+    legs: route.legs.map((leg, li) => ({
+      kind: leg.kind ?? 'unlock',
+      id: leg.id ?? `${leg.skill}|${leg.to}`,
+      label: leg.label ?? null,
+      item: leg.item ?? null,
+      reasons: (leg.reasons ?? []).map((r) => (typeof r === 'string' ? r : r.text)),
+      skill: leg.skill,
+      from: leg.from,
+      to: leg.to,
+      unlocks: leg.unlocks.map((m) => m.key),
+      steps: leg.steps.map((st, si) => ({
+        id: `${li}.${si}`,
+        kind: st.kind,
+        method: st.method.key,
+        actions: st.actions,
+        hours: st.hours,
+        item: st.item ?? null,
+        qty: st.qty ?? null,
+        target: st.target ?? null,
+        xpAfter: st.xpAfter,
+        xpGain: st.xpGain,
+        toLevel: st.toLevel ?? null,
+        lasts: Number.isFinite(st.lasts) ? st.lasts : null,
+        levelUps: st.levelUps ?? [],
+        task: st.task ?? null,
+        newItems: st.newItems ?? [],
+      })),
+    })),
+    done: [],
+  };
+}
+
+/**
+ * Where you are on a locked route, from your save.
+ * @param current key of the method you're doing in the game
+ * @param mastery the save's Mastery Guild task states (save.mastery), for Mastery task steps
+ * @param room { items: what's in the bank itself, free: free bank slots, empty: items with an empty placeholder },
+ *   to warn when the plan's new items won't fit
+ * @returns { legs: [{ skill, from, to, unlocks, hours, at, steps, done }], step (what to do now), finished,
+ *   broken (the data changed under it), blocked (the item the step needs that you don't have and nothing
+ *   left in the route makes), newlyDone: step ids done since the last check }; each step adds
+ *   { method, done, on, left: { actions, qty, hours } } — `left` is what's still to do.
+ */
+export function routeProgress(gd, locked, { levels, xp, bank, current = null, mastery = null, room = null }) {
+  const done = new Set(locked.done);
+  const newlyDone = [];
+  let broken = false;
+  const legs = locked.legs.map((leg) => {
+    const steps = leg.steps.map((saved) => {
+      const method = gd.methodByKey.get(saved.method);
+      if (!method) {
+        broken = true;
+        return null;
+      }
+      const base = computeRates(gd, method, gd.levelOf(levels, method.skill));
+      const f = locked.speed?.[method.key] ?? 1;
+      const rates = f === 1 ? base : { ...base, cyclesPerHour: base.cyclesPerHour * f, xpPerHour: base.xpPerHour * f };
+      let left;
+      if (saved.kind === 'task') {
+        // A Mastery task: what its goal still needs, from the save.
+        const t = saved.task;
+        const s = mastery?.[t.skill]?.[t.id] ?? mastery?.[t.skill]?.[String(t.id).split(':').pop()];
+        const progress = s?.goalComplete ? t.of : Math.min(t.of, s?.goalProgress ?? t.done);
+        const actions = Math.min(saved.actions, Math.ceil(Math.max(0, t.of - progress) / Math.max(t.perAction, 1e-9) - 1e-9));
+        left = { actions, qty: null, hours: actions / rates.cyclesPerHour, progress };
+      } else if (saved.kind === 'train' || saved.target == null || !bank) {
+        const xpEach = rates.xpPerHour / rates.cyclesPerHour;
+        // Only this step's own share: the XP still between you and where it ends, at most what it gives.
+        const xpLeft = Math.min(saved.xpGain ?? Infinity, Math.max(0, saved.xpAfter - (xp[method.skill] ?? 0)));
+        const actions = xpEach > 0 ? Math.ceil(xpLeft / xpEach - 0.5) : 0;
+        left = { actions: Math.max(0, actions), qty: null, hours: Math.max(0, actions) / rates.cyclesPerHour };
+      } else {
+        const each = (rates.outputs.find((o) => o.item === saved.item)?.perHour ?? 0) / rates.cyclesPerHour;
+        const qty = Math.min(saved.qty ?? Infinity, Math.max(0, saved.target - (bank[saved.item] ?? 0)));
+        const actions = each > 0 ? Math.ceil(qty / each - 0.5) : 0;
+        left = { actions: Math.max(0, actions), qty, hours: Math.max(0, actions) / rates.cyclesPerHour };
+      }
+      const uses = new Map(rates.inputs.map((i) => [i.item, i.perHour / rates.cyclesPerHour]));
+      return { ...saved, method, left, fromBank: left, uses, levelUps: saved.levelUps };
+    });
+    return { ...leg, unlocks: leg.unlocks.map((k) => gd.methodByKey.get(k)).filter(Boolean), steps };
+  });
+  if (broken) return { legs: [], step: null, finished: false, broken: true, blocked: null, newlyDone: [] };
+  const mark = (st) => {
+    if (done.has(st.id)) return;
+    done.add(st.id);
+    newlyDone.push(st.id);
+  };
+  const flat = legs.flatMap((l) => l.steps);
+  // Goes over the route until nothing more turns out to be done (one step being done can finish another).
+  const pass = () => {
+    const before = done.size;
+    // Goal by goal. Training is done when your XP gets there, whenever that is. A gathering step's own
+    // count only means something once the goals before it are done (they may use up what's in the bank).
+    let reached = true;
+    for (const leg of legs) {
+      leg.reached = reached;
+      for (const st of leg.steps) {
+        // Not its turn yet: what it'll take, not what your bank says today.
+        st.left = !reached && st.kind !== 'train' && st.kind !== 'task' ? { actions: st.actions, qty: st.qty, hours: st.hours } : st.fromBank;
+        if (st.left.actions <= 0 && (st.kind === 'train' || st.kind === 'task' || reached)) mark(st);
+      }
+      // At the level an unlock goal was for: the whole goal is done, however you got there.
+      if ((leg.kind ?? 'unlock') === 'unlock' && gd.levelOf(levels, leg.skill) >= leg.to) leg.steps.forEach(mark);
+      const lastTrain = leg.steps.findLastIndex((st) => st.kind === 'train' && done.has(st.id));
+      for (const st of lastTrain > 0 ? leg.steps.slice(0, lastTrain) : []) mark(st);
+      if (!leg.steps.every((st) => done.has(st.id))) reached = false;
+    }
+    // Enough for what's left: your bank covers everything still to do that uses the item. (The spare a
+    // plan gathers is there for bad luck, not something you have to finish.)
+    if (bank) {
+      for (const st of flat) {
+        if (st.kind === 'train' || st.kind === 'task' || !st.item || done.has(st.id)) continue;
+        // Only materials: something the goal is for (a piece of gear) is done when you have it.
+        if (!flat.some((c) => c !== st && c.uses.has(st.item))) continue;
+        const need = flat.reduce((sum, c) => sum + (c === st || done.has(c.id) ? 0 : (c.uses.get(st.item) ?? 0) * c.left.actions), 0);
+        if ((bank[st.item] ?? 0) >= need) mark(st);
+      }
+    }
+    return done.size > before;
+  };
+  for (let i = 0; i < 8 && pass(); i++);
+  // What a step needs that you haven't got: a level, or an item (null when you can do it now).
+  const missing = (st) => {
+    if (!gd.checkRequirements(st.method, levels).ok) return 'level';
+    if (!bank) return null;
+    return computeRates(gd, st.method, gd.levelOf(levels, st.method.skill)).inputs.find((i) => (bank[i.item] ?? 0) < minEach(st.method, i.item))?.item ?? null;
+  };
+  let at = 0;
+  let step = null;
+  let blocked = null;
+  for (const leg of legs) {
+    for (const st of leg.steps) st.done = done.has(st.id);
+    leg.done = leg.steps.every((st) => st.done);
+    leg.at = at;
+    leg.hours = leg.steps.reduce((s, st) => s + (st.done ? 0 : st.left.hours), 0);
+    at += leg.hours;
+    // The first goal that isn't done: the step you're on, else the first you can do now. When you can't
+    // do any of them (you've run out of something and nothing left in the goal makes it), it's stuck.
+    if (!step && !leg.done) {
+      const todo = leg.steps.filter((st) => !st.done);
+      step = todo.find((st) => st.method.key === current && !missing(st)) ?? todo.find((st) => !missing(st)) ?? null;
+      if (!step) {
+        step = todo[0];
+        blocked = missing(step);
+      }
+      step.on = step.method.key === current;
+    }
+  }
+  // Bank space: the item types the steps still to do bring in that the bank doesn't hold, against the free
+  // slots. Short means the game will stop part-way (it can't take a new item with the bank full).
+  let space = null;
+  if (room) {
+    // An item with an empty placeholder drops back into it without a new slot.
+    const empty = new Set(room.empty ?? []);
+    const needsSlot = (item) => !(room.items?.[item] > 0) && !empty.has(item);
+    const coming = [...new Set(legs.flatMap((l) => l.steps).filter((st) => !st.done).flatMap((st) => st.newItems ?? []))].filter(needsSlot);
+    if (coming.length > room.free) {
+      const flat = legs.flatMap((l) => l.steps).filter((st) => !st.done);
+      let seen = 0;
+      const where = flat.find((st) => (seen += (st.newItems ?? []).filter(needsSlot).length) > room.free);
+      space = { short: coming.length - room.free, free: room.free, items: coming, at: where?.id ?? null };
+    }
+  }
+  return { legs, step, finished: !step, broken: false, blocked, space, newlyDone, hours: at };
+}
+
+// What you do in each kind of skill, to start a step with: "Mine 37 Iron Ore", "Make Oak Boomerang × 931".
+export const STEP_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', firemaking: 'Burn', artisan: 'Make', thieving: 'Steal from', agility: 'Do', astrology: 'Study', hunting: 'Hunt', farming: 'Grow', ranching: 'Raise' };
+export const GATHER_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', artisan: 'Make', hunting: 'Hunt', farming: 'Grow' };
+
+// A step in plain words, with what's still to do when `left` says so: for notifications and titles.
+export function describeStep(gd, st, { left = true } = {}) {
+  const todo = left && !st.done && st.left ? st.left : null;
+  const n = (x) => Math.ceil(x).toLocaleString('en-US');
+  if (st.kind === 'task') return `${st.task.label}${todo?.progress != null ? ` (${n(todo.progress)}/${n(st.task.of)})` : ''}`;
+  if (st.kind === 'train') return `${STEP_VERBS[st.method.kind] ?? 'Do'} ${st.method.name} × ${n(todo ? todo.actions : st.actions)} until ${gd.skillName(st.method.skill)} ${st.toLevel}`;
+  return `${GATHER_VERBS[st.method.kind] ?? 'Get'} ${n(todo?.qty ?? st.qty)} ${gd.itemName(st.item)}`;
+}

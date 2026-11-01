@@ -1,0 +1,7 @@
+node_modules/
+demo-saves/
+data/source/
+history/
+dist/
+reports/
+.gdignore

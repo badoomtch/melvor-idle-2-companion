@@ -24,14 +24,26 @@ export const upgradeFrom = (ctx, u) => [...u.costs.items.map((i) => `${i.qty > 1
 // "20 Grain every 5 min from 10 Wheat": a Grain Mill batch.
 export const millBatch = (ctx, r) => `${exact(r.product.qty)} every ${duration(ctx.gd.raw.grainMill.baseIntervalMs / 3_600_000)} from ${r.ingredients.map((i) => `${exact(i.qty)} ${esc(ctx.gd.itemName(i.item))}`).join(' and ')}`;
 
+// "0.25% per hit (1 in 400)", "every craft": how likely one action is to give the item.
+function chanceText(chance, per) {
+  if (!(chance > 0)) return '';
+  if (chance >= 1) return `every ${per}`;
+  const percent = chance * 100;
+  const digits = percent >= 1 ? 1 : Math.min(4, Math.ceil(-Math.log10(percent)) + 1);
+  return `${pct(chance, digits)} per ${per}${chance < 0.1 ? ` (1 in ${exact(Math.round(1 / chance))})` : ''}`;
+}
+// Upgrades, the mill and the shop always give the item; sources without a known chance go last.
+const sourceChance = (s) => (s.type === 'enemy' || s.type === 'method' ? s.chance ?? -1 : 1);
+
 function itemPage(ctx, id) {
   const { gd } = ctx;
   const d = itemDetails(gd, id);
   if (!d.info) return card('Not found', '<p class="muted">That item isn\'t in the companion data (it may not be in the demo).</p>');
   const needs = (list) => (list.length ? ` · needs ${requirementText(ctx, list)}` : '');
-  const sources = d.sources.map((s) => {
-    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}</span></li>`;
-    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${pct(s.chance, s.chance < 0.01 ? 2 : 1)} per kill</span></li>`;
+  // Likeliest source first (a stable sort, so ties keep the game data's order).
+  const sources = [...d.sources].sort((a, b) => sourceChance(b) - sourceChance(a)).map((s) => {
+    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}${s.chance != null ? ` · ${chanceText(s.chance, s.per)}` : ''}</span></li>`;
+    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${chanceText(s.chance, 'kill')}</span></li>`;
     if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span></li>`;
     if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span></li>`;
     return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span></li>`;

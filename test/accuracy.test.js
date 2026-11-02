@@ -45,3 +45,21 @@ test('the observation store adds up per action and keeps it in its own folder', 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a measurement is compared with what was predicted at the time, and only those move plan speeds', async () => {
+  const { compareActions, speedFactors } = await import('../engine/accuracy.js');
+  const { createGameData } = await import('../engine/gamedata.js');
+  const { readFileSync } = await import('node:fs');
+  const g = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
+  const levels = Object.fromEntries(g.skills.map((s) => [s.id, 20]));
+  // Half an hour of Normal Trees: 1,000 XP, when the companion predicted 1,000 for that stretch.
+  const actions = { 'Woodcutting - Normal Tree': { seconds: 1800, xp: { Woodcutting: 1000 }, items: {}, timed: { seconds: 1800, xp: 1000, est: 1000 } } };
+  const [row] = compareActions(g, actions, levels);
+  assert.equal(row.atTheTime, true);
+  assert.equal(row.ratio, 1, 'compared with the prediction of its time, not today’s');
+  assert.equal(speedFactors(g, actions, levels)['Woodcutting/NormalTree'], 1);
+  // An old record without one: still shown, but it doesn't move plans.
+  delete actions['Woodcutting - Normal Tree'].timed;
+  assert.equal(compareActions(g, actions, levels)[0].atTheTime, false);
+  assert.deepEqual(speedFactors(g, actions, levels), {});
+});

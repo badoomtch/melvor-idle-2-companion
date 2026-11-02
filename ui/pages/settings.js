@@ -50,7 +50,9 @@ export function settings(ctx) {
     ${card('Alerts', `<p class="small muted">Pop-ups (and desktop notifications, if they're on) while the game runs.</p>
       <label class="inline-check"><input type="checkbox" data-action="alertToggle" data-key="runningOut"${state.alerts.runningOut ? ' checked' : ''}> Warn when supplies will run out within <input id="alert-minutes" type="number" min="1" max="600" value="${state.alerts.minutes}" data-bind="alerts.minutes" style="width:5em"> minutes</label>
       <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="stopped"${state.alerts.stopped ? ' checked' : ''}> Warn when nothing is training, progress stalls, or the game stops saving</label>
-      <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="planSteps"${state.alerts.planSteps !== false ? ' checked' : ''}> Say when a step of your plan (What next) is done, and what's next</label>`)}
+      <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="planSteps"${state.alerts.planSteps !== false ? ' checked' : ''}> Say when a step of your plan (What next) is done, and what's next</label>
+      <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="harvests"${state.alerts.harvests !== false ? ' checked' : ''}> Say when a farming plot is ready to harvest</label>
+      <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="ranch"${state.alerts.ranch !== false ? ' checked' : ''}> Warn when ranch animals are hungry, sick or about to die of old age</label>`)}
     ${card('Notifications', `<p class="small muted">A pop-up appears here when you level up or reach a goal.</p>
       ${state.serverAlerts ? `<div class="server-alerts">
         <p><strong>Desktop notifications from the companion</strong><br><span class="small muted">The level-ups, goals and warnings above arrive as desktop notifications while the companion runs, even with this page closed.</span></p>

@@ -153,7 +153,7 @@ test('a locked route keeps its steps and only moves its progress on as your save
   }
 });
 
-test('a locked route says when the step you are on needs something you ran out of', () => {
+test('a locked route gets you more of something you ran out of before the step that needs it', () => {
   const levels = at(30);
   const bank = { 'MelvorBase:RawShrimp': 5000 };
   const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(30)]));
@@ -161,8 +161,12 @@ test('a locked route says when the step you are on needs something you ran out o
   const p = routeProgress(gd, locked, { levels, xp, bank, current: 'Cooking/Shrimp' });
   assert.equal(p.step.method.key, 'Cooking/Shrimp');
   assert.equal(p.blocked, null);
+  // Out of shrimp: catching more goes in first, and the plan isn't stuck.
   const gone = routeProgress(gd, locked, { levels, xp, bank: {}, current: 'Cooking/Shrimp' });
-  assert.equal(gone.blocked, 'MelvorBase:RawShrimp');
+  assert.equal(gone.blocked, null);
+  assert.equal(gone.short, null);
+  assert.ok(gone.step.topUp);
+  assert.equal(gone.step.item, 'MelvorBase:RawShrimp');
 });
 
 test('a locked route ticks steps off by itself, in whatever order you do them', () => {
@@ -275,4 +279,50 @@ test('a gear goal is only done once the gear is made, not because nothing else n
   assert.ok(!before.legs.find((l) => l.kind === 'gear').done, 'not done before it is made');
   const after = routeProgress(gd, locked, { levels, xp, bank: { ...bank, [item]: 1 } });
   assert.ok(after.legs.find((l) => l.kind === 'gear').done, 'done once you have it');
+});
+
+test('every step still to do is checked against the bank, counting what earlier steps make and use', () => {
+  const levels = at(60);
+  const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(60)]));
+  const smelt = gd.methods.find((m) => m.skill === 'Smithing' && m.category === 'Smelting' && m.ingredients.length === 2);
+  const [ore, other] = smelt.ingredients.map((i) => i.item);
+  const train = (method, actions) => ({ kind: 'train', method, actions, hours: 1, xpAfter: gd.xp.xpForLevel(61), xpGain: gd.xp.xpForLevel(61) - gd.xp.xpForLevel(60), toLevel: 61, levelUps: [] });
+  const route = (first) => lockRoute({ legs: [
+    { kind: 'unlock', skill: first.method.skill, from: 60, to: 70, unlocks: [], steps: [first] },
+    { kind: 'unlock', skill: 'Smithing', from: 60, to: 70, unlocks: [], steps: [train(smelt, 20)] },
+  ] });
+  const tree = train(gd.methodByKey.get('Woodcutting/NormalTree'), 10);
+  const enough = Object.fromEntries(smelt.ingredients.map((i) => [i.item, i.qty * 100_000]));
+  assert.equal(routeProgress(gd, route(tree), { levels, xp, bank: enough }).short, null, 'enough for every step');
+  // You sold the ore: the later smelting step would run short, so a step that mines the rest goes in
+  // just before it and the plan carries on. The step you're on stays first.
+  const sold = routeProgress(gd, route(tree), { levels, xp, bank: { [other]: 10_000_000 } });
+  assert.equal(sold.short, null);
+  assert.equal(sold.step.method.key, 'Woodcutting/NormalTree');
+  const [top, smelting] = sold.legs[1].steps;
+  assert.ok(smelting.short.need > 0 && smelting.short.have === 0 && smelting.short.topUp);
+  assert.equal(top.item, ore);
+  assert.ok(top.topUp && top.qty >= smelting.short.need && top.left.hours > 0);
+  assert.ok(sold.legs[1].hours > top.left.hours, 'its time counts in the goal');
+  // Nothing you can do makes it (no Mining): the plan really is short.
+  const stuck = routeProgress(gd, route(tree), { levels: { ...levels, Mining: 1 }, xp, bank: { [other]: 10_000_000 } });
+  assert.equal(stuck.short.item, ore);
+  // A step before it that gathers the ore covers it.
+  const mine = gd.methods.find((m) => m.kind === 'mining' && m.product.item === ore);
+  const gather = { kind: 'gather', method: mine, item: ore, qty: 100_000, target: 100_000, actions: 100_000, hours: 1, levelUps: [] };
+  assert.equal(routeProgress(gd, route(gather), { levels, xp, bank: { [other]: 10_000_000 } }).short, null);
+});
+
+test('the shop offer for a step: how many purchases, what they cost and whether you can afford it', async () => {
+  const { shopOffer } = await import('../engine/shop.js');
+  const { createGameData } = await import('../engine/gamedata.js');
+  const { readFileSync } = await import('node:fs');
+  const gd = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
+  const sand = 'MelvorBase:BucketofSand';
+  const offer = shopOffer(gd, sand, 22, { levels: {}, wallet: { GoldPieces: 538 } });
+  assert.equal(offer.qty, 22);
+  assert.deepEqual(offer.currencies, [{ currency: 'GoldPieces', qty: 110, have: 538 }]);
+  assert.equal(offer.affordable, true);
+  assert.equal(shopOffer(gd, sand, 22, { levels: {}, wallet: { GoldPieces: 50 } }).affordable, false);
+  assert.equal(shopOffer(gd, 'MelvorBase:NormalLog', 10, { levels: {} }), null, 'not sold');
 });

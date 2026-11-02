@@ -117,3 +117,19 @@ test('rare items from chests you have: your chance from opening them all', () =>
   const expected = 1 - Math.pow(1 - pick.best.p, 50);
   assert.ok(Math.abs(pick.best.chanceFromOwned - expected) < 1e-9);
 });
+
+test("food in a skill's own slot: sushi's stealth is suggested for Thieving, and counted once selected", async () => {
+  const { foodAdvice } = await import('../engine/toolbelt-advice.js');
+  const { playerBonuses } = await import('../engine/gamedata.js');
+  const save = { ...setup({ bank: { [ID('TroutSushi')]: 5, [ID('Mackerel')]: 50 } }), skills: {}, foods: { Thieving: ID('Mackerel') } };
+  const advice = foodAdvice(gd, save, { levels: at(20) });
+  const thieving = advice.find((f) => f.skill === 'Thieving');
+  assert.equal(thieving.item, ID('TroutSushi'));
+  assert.equal(thieving.replaces, ID('Mackerel'));
+  assert.ok(thieving.gain.score > 0);
+  const selected = playerBonuses(gd, { ...save, foods: { Thieving: ID('TroutSushi') } });
+  assert.ok(selected.some((e) => e.stat === 'FlatStealth' && e.skill === 'Thieving'), 'its stealth counts while selected');
+  const eaten = playerBonuses(gd, { ...save, bank: { items: {} }, foods: { Thieving: ID('TroutSushi') } });
+  assert.ok(!eaten.some((e) => e.stat === 'FlatStealth' && /food/.test(e.source)), 'and not once you have none left');
+  gd.player = null;
+});

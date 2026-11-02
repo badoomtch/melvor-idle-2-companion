@@ -162,7 +162,10 @@ test('area effects: accuracy, enemy evasion and protection, food healing and imm
   const sanctum = gd.combat.dungeons.find((d) => d.id === 'BloodSanctum');
   assert.ok(sanctum.effect.some((m) => m.stat === 'ImmunityFrom' && m.style === 'Ranged'));
   assert.equal(dungeonRun(gd, sanctum, { gear: ['MelvorBase:OakBow'], stance: 'Accurate', levels: at(99), food }), null);
-  assert.ok(dungeonRun(gd, sanctum, { gear: [], stance: 'Stab', levels: at(99), food })?.runMinutes > 0, 'melee can still run it');
+  // Melee can still run it, with gear that out-damages the Blood enemies' lifesteal.
+  const dragon = ['MelvorBase:DragonruneGreatsword', 'MelvorBase:DragonPlatebody', 'MelvorBase:DragonPlatelegs', 'MelvorBase:DragonHelmet'];
+  assert.ok(dungeonRun(gd, sanctum, { gear: dragon, stance: 'Slash', levels: at(99), food })?.runMinutes > 0, 'melee can still run it');
+  assert.equal(dungeonRun(gd, sanctum, { gear: [], stance: 'Stab', levels: at(99), food }), null, 'bare hands: a Blood Imp heals faster');
 });
 
 test('combat and Slayer XP bonuses, Slayer coin bonuses and spawn time', () => {
@@ -253,7 +256,8 @@ test('supplies: kept ammo, runes, prayer points and food are not used up', () =>
 test('ammo is picked by the fight, not by strength alone', () => {
   const crossbow = Object.entries(gd.items).find(([, it]) => it.equip?.weapon?.ammo === 'Bolts')?.[0];
   const levels = at(99);
-  const roller = buildEnemy(gd, enemyOf('SandWurm'));
+  // (A Sand Wurm's 180 armour holds every iron crossbow hit to 1, whatever the bolts.)
+  const roller = buildEnemy(gd, enemyOf('BlackstoneRoller'));
   const owned = new Map([[crossbow, 1], ['MelvorBase:DiamondBolts', 100], ['MelvorBase:BlackOpalBolts', 100], ['MelvorBase:TopazBolts', 100]]);
   const r = scoreGear(gd, { style: 'Ranged', gear: [crossbow], owned, levels, enemy: roller });
   // Topaz is beaten on every number by Diamond, so it isn't tried; the others are.

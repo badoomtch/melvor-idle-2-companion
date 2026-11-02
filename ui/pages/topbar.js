@@ -1,10 +1,11 @@
 // The side menu, the top bar (theme picker, save picker, live pill).
 import { currentActivity } from '/engine/advisor.js';
 import { bankCapacity } from '/engine/bank-space.js';
+import { farmingPlots, plotRanges } from '/engine/farming-plots.js';
 import { currentSupplies } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, iconImg, num } from '/ui/format.js';
 import { routeFor } from './route-ui.js';
-import { skillName } from './shared.js';
+import { methodIcon, skillName } from './shared.js';
 
 // Page renderers. Each takes the view context built by app.js and returns HTML.
 
@@ -114,6 +115,16 @@ export function renderNavNow(ctx) {
   if (supply) {
     const low = supply.hoursLeft * 60 <= state.alerts.minutes;
     rows.push(`<div class="now-line${low ? ' warn-text' : ''}" title="${esc(`${exact(supply.qty)} ${gd.itemName(supply.item)} left`)}"><span class="with-icon">${iconImg(gd.items[supply.item]?.icon, 'icon sm')}${esc(gd.itemName(supply.item))}</span><span class="num">${supply.qty > 0 ? duration(supply.hoursLeft) : 'Out'}</span></div>`);
+  }
+  // Farming: plots ready to harvest, else when the next one is ready (from the save's own time).
+  const farm = farmingPlots(gd, save);
+  if (farm?.ready.length) {
+    const p = farm.ready[0];
+    const crops = [...new Set(farm.ready.map((x) => x.method?.name ?? x.recipe))];
+    rows.push(`<a class="now-line good-text" href="#/skills/Farming" title="${esc(`Ready to harvest: ${crops.join(', ')} (${plotRanges(farm.ready)})`)}"><span class="with-icon">${p.method ? methodIcon(gd, p.method) : ''}${esc(crops.length > 1 ? `${farm.ready.length} plots` : farm.ready.length > 1 ? `${crops[0]} × ${farm.ready.length}` : crops[0])}</span><span class="num">Ready</span></a>`);
+  } else if (farm?.next) {
+    const p = farm.next;
+    rows.push(`<a class="now-line" href="#/skills/Farming" title="${esc(`Next harvest: ${p.method?.name ?? p.recipe} on ${p.name}`)}"><span class="with-icon">${p.method ? methodIcon(gd, p.method) : ''}${esc(p.method?.name ?? p.recipe)}</span><span class="num">${duration(Math.max(0, p.readyAt - Date.now()) / 3_600_000)}</span></a>`);
   }
   const task = Object.entries(save.slayer ?? {}).find(([, t]) => t?.task && t.progress < t.length);
   if (task) {

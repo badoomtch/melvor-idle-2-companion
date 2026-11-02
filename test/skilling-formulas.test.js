@@ -112,3 +112,148 @@ test('hunting: a higher journal level means bigger catches and its own bonuses f
   assert.ok(faster.cyclesPerHour > computeRates(gd, m, m.level, { bonuses: [], journalLevel: 10 }).cyclesPerHour);
   assert.equal(computeRates(gd, method('Hunting/WildCow'), 99, { bonuses: effects, journalLevel: 10 }).bonuses, undefined, 'and only for that animal');
 });
+
+test('a lit bonfire adds XP to every skill, and an Aurora its own bonuses, only while they last', async () => {
+  const { playerBonuses } = await import('../engine/gamedata.js');
+  const lit = { skills: {}, bonfire: { bonfire: 'Willow', active: true, paused: false, ticksLeft: 1000, maxTicks: 2000 } };
+  const xp = playerBonuses(gd, lit).filter((e) => e.stat === 'PercentXPGained' && /Bonfire/.test(e.source));
+  assert.equal(new Set(xp.map((e) => e.skill)).size, gd.skills.length, 'one for every skill');
+  assert.equal(playerBonuses(gd, { ...lit, bonfire: { ...lit.bonfire, ticksLeft: 0 } }).filter((e) => /Bonfire/.test(e.source ?? '')).length, 0, 'burnt out');
+  const aurora = playerBonuses(gd, { skills: {}, auroras: { Woodcutting: { event: 'WoodcuttingAurora', activated: true, charges: 10 } } });
+  const m = method('Woodcutting/NormalTree');
+  assert.ok(computeRates(gd, m, 99, { bonuses: aurora }).xpPerHour > computeRates(gd, m, 99, { bonuses: [] }).xpPerHour);
+});
+
+test('hunting: a rare species doubles the catch and brings its own drops', () => {
+  const m = method('Hunting/WildChicken');
+  const none = computeRates(gd, { ...m, rareChance: 0 }, 20, { bonuses: [] });
+  const all = computeRates(gd, { ...m, rareChance: 1 }, 20, { bonuses: [] });
+  const feathers = m.products[0].item;
+  assert.ok(out(all, feathers) > out(none, feathers) * 1.9, 'products doubled');
+  const egg = m.rareSpecies.find((s) => s.extra.length).extra[0].item;
+  assert.equal(out(none, egg), 0);
+  assert.ok(out(all, egg) > 0, 'the Golden Egg only comes from the Golden Chicken');
+});
+
+test('thieving: the same-area bonus also robs the other targets of that type nearby', () => {
+  const m = gd.methods.find((x) => x.kind === 'thieving' && gd.methods.some((y) => y !== x && y.kind === 'thieving' && y.category === x.category && y.type === x.type && y.level <= x.level));
+  const base = computeRates(gd, m, 99, { bonuses: [] });
+  const more = computeRates(gd, m, 99, { bonuses: [bonus(m, 'SameAreaPickpocketChance', 0.1)] });
+  assert.ok(more.grossPerHour > base.grossPerHour, 'more loot');
+  assert.equal(more.xpPerHour, base.xpPerHour, 'but no extra XP');
+});
+
+test('hunting: the preferred bait speeds trapping while you have some, and trapless hunting needs no traps', () => {
+  const m = method('Hunting/WildChicken');
+  const levels = { Hunting: 99, Strength: 99 };
+  const run = (owned, lv = levels) => {
+    gd.player = { owned, levels: lv, huntingJournal: { WildChicken: { level: 1 } } };
+    gd.playerBonuses = [];
+    const r = computeRates(gd, m, 99);
+    gd.player = null;
+    gd.playerBonuses = null;
+    return r;
+  };
+  const snare = m.traps[0].item;
+  const plain = run({ [snare]: 100 });
+  const baited = run({ [snare]: 100, [m.bait.item]: 100 });
+  assert.ok(baited.cyclesPerHour > plain.cyclesPerHour, 'bait cuts the trapping time');
+  assert.ok(baited.inputs.some((i) => i.item === m.bait.item), 'one bait per trap attempt');
+  assert.ok(!plain.inputs.some((i) => i.item === m.bait.item));
+  const trapless = run({});
+  assert.ok(trapless.successChance > plain.successChance, 'trapless adds its success bonus');
+  assert.ok(!trapless.inputs.some((i) => i.item === snare), 'and uses no snares');
+  assert.ok(!run({}, { Hunting: 10, Strength: 1 }).note.includes('trapless'), 'only once its levels are met');
+});
+
+test('hunting: surveys can turn up one find per catch, and an undiscovered animal takes longer', () => {
+  const m = method('Hunting/WildChicken');
+  const r = computeRates(gd, m, 99, { bonuses: [] });
+  const find = m.survey[0];
+  const per = out(r, find.item) / r.cyclesPerHour;
+  assert.ok(per > find.chance * find.qty * 0.99 && per <= 1, 'at least one survey per catch, at most one find');
+  gd.player = { huntingJournal: { WildChicken: { level: 1, xp: 0, discovered: false } } };
+  const hidden = computeRates(gd, m, 99, { bonuses: [] });
+  gd.player = null;
+  assert.match(hidden.note, /not discovered/);
+  assert.ok(hidden.cyclesPerHour < r.cyclesPerHour);
+});
+
+test('astrology: every study can sight a Starfall, worth more the higher your level', () => {
+  const m = gd.methods.find((x) => x.kind === 'astrology');
+  const ev = m.events.find((e) => e.name === 'Starfall');
+  const r = computeRates(gd, m, 50, { bonuses: [] });
+  close(out(r, ev.item) / r.cyclesPerHour, ev.chance * (ev.qty + 50 * ev.perLevel));
+  close(r.chancePerCycle[ev.item], ev.chance);
+  const lucky = computeRates(gd, m, 50, { bonuses: [{ stat: 'PercentEventChance', value: 1, skill: 'Astrology', scope: { Event: 'Starfall' } }] });
+  close(out(lucky, ev.item), out(r, ev.item) * 2);
+  const meteor = m.events.find((e) => e.name === 'Meteor Shower').item;
+  close(out(lucky, meteor), out(r, meteor), 1e-9);
+});
+
+test('firemaking: Fireflies need their Astrology node, and the find grows with the burn time', () => {
+  const m = method('Firemaking/MagicLog');
+  const fly = m.events.find((e) => e.name === 'Fireflies');
+  assert.equal(out(computeRates(gd, m, 99, { bonuses: [] }), fly.item), 0, 'not counted while the node is unknown');
+  gd.player = { astrologyNodes: ['AmeriaMajor4'], levels: {}, owned: {}, toolbelts: {} };
+  const r = computeRates(gd, m, 99, { bonuses: [] });
+  const doubled = computeRates(gd, m, 99, { bonuses: [{ stat: 'DoublingChance', value: 1, skill: 'Firemaking' }] });
+  gd.player = null;
+  close(out(r, fly.item) / r.cyclesPerHour, fly.chance * Math.floor(fly.qty * (m.interval / 1000)));
+  close(out(doubled, fly.item), out(r, fly.item), 1e-9);
+});
+
+test('mining: a shatter triples the ore and doubles the XP, and a pickaxe can turn ore into its bar', () => {
+  const m = method('Mining/IronOre');
+  const base = computeRates(gd, m, 99, { bonuses: [] });
+  const shatter = computeRates(gd, m, 99, { bonuses: [bonus(m, 'ShatterChance', 0.03)] });
+  close(out(shatter, m.product.item), out(base, m.product.item) * 1.06);
+  close(shatter.xpPerHour, base.xpPerHour * 1.03);
+  const bars = computeRates(gd, m, 99, { bonuses: [bonus(m, 'BarItemChance', 0.05)] });
+  close(out(bars, m.bar) / bars.cyclesPerHour, 0.05);
+});
+
+test('mastery: node totals, journal levels, rare species and collectables count from the save', async () => {
+  const { conditionMet } = await import('../engine/mastery.js');
+  const save = {
+    astrology: { Deedree: { knowledge: 0, minor: ['a', 'b', 'c'], major: ['x'] }, Terra: { knowledge: 0, minor: ['d'], major: [] } },
+    huntingJournal: { WildChicken: { level: 6 }, WildCow: { level: 9 }, Griffin: { level: 1 } },
+    statistics: { HuntingAnimalSpeciesTrapped: { GoldenChicken: 2 }, BankItemFound: { GoldenEggCollectable: 1 } },
+  };
+  const met = (condition) => conditionMet(gd, condition, { save, levels: {} });
+  assert.equal(met({ type: 'value', stat: 'AstrologyTotalMinorNodesUnlocked', value: 4 }), true);
+  assert.equal(met({ type: 'value', stat: 'AstrologyTotalMajorNodesUnlocked', value: 2 }), false);
+  assert.equal(met({ type: 'astrologyNodes', constellation: 'Deedree', major: false, count: 3 }), true);
+  assert.equal(met({ type: 'astrologyNodes', constellation: 'Terra', major: true, count: 1 }), false);
+  assert.equal(met({ type: 'journalLevels', level: 5, count: 2 }), true);
+  assert.equal(met({ type: 'rareSpecies', count: 1 }), true);
+  assert.equal(met({ type: 'collectables', count: 2 }), false);
+  assert.equal(conditionMet(gd, { type: 'rareSpecies', count: 1 }, { save: {}, levels: {} }), null, 'unknown without the statistics');
+});
+
+test('toolbelt items used up as you work cost what they use, within their limits, less any toolbelt saving', () => {
+  const withBelt = (skill, items, effects = []) => {
+    gd.player = { toolbelts: { [skill]: items.map((item) => ({ item, qty: 100 })) }, owned: {}, levels: {} };
+    gd.playerBonuses = effects;
+  };
+  const done = () => { gd.player = null; gd.playerBonuses = null; };
+  const burn = method('Firemaking/NormalLog');
+  const blackstone = 'MelvorBase:Blackstone';
+  withBelt('Firemaking', [blackstone]);
+  const r = computeRates(gd, burn, 99);
+  const used = r.toolUse.find((t) => t.item === blackstone);
+  close(used.perHour, r.cyclesPerHour, 1e-9);
+  withBelt('Firemaking', [blackstone], [{ stats: 'Toolbelt', stat: 'PreservationChance', value: 0.3, skill: 'Firemaking', scope: { Item: 'Blackstone' } }]);
+  const gloves = computeRates(gd, burn, 99);
+  close(gloves.toolUse[0].perHour, gloves.cyclesPerHour * 0.7);
+  assert.ok(gloves.costPerHour < r.costPerHour + 1e-9, 'the saving lowers the cost');
+  // A lockpick is only used on chests.
+  const npc = gd.methods.find((m) => m.kind === 'thieving' && m.type === 'NPC' && !m.requires.some((q) => q.type === 'tool'));
+  const chest = gd.methods.find((m) => m.kind === 'thieving' && m.type === 'Chest');
+  withBelt('Thieving', ['MelvorBase:Lockpick']);
+  assert.equal(computeRates(gd, npc, 99).toolUse.length, 0);
+  assert.equal(computeRates(gd, chest, 99).toolUse.length + computeRates(gd, chest, 99).inputs.filter((i) => i.item === 'MelvorBase:Lockpick').length, 1, 'once per chest, as a tool it needs or from the toolbelt');
+  // Base rates (no bonuses) count no toolbelt.
+  assert.equal(computeRates(gd, burn, 99, { bonuses: [] }).toolUse.length, 0);
+  done();
+});

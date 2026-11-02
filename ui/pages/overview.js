@@ -6,13 +6,34 @@ import { card, itemLink, methodLink, noSaveCard, pageHead, signed, skillName, st
 
 // ---------- Overview ----------
 
+// A lit bonfire and any Aurora running: bonuses that only last a while (they're in every rate meanwhile).
+function boosts(ctx) {
+  const { gd, save } = ctx;
+  const lines = [];
+  const b = save.bonfire;
+  const fire = b?.active && b.ticksLeft > 0 ? gd.raw.bonfires?.[b.bonfire] : null;
+  if (fire) {
+    const xp = fire.effects.filter((e) => e.stat === 'PercentXpGained').reduce((s, e) => s + e.value, 0);
+    // FillableTimer ticks run at 60 a second; the bonfire waits while you're doing Firemaking.
+    lines.push(`${esc(fire.name)}${xp ? `: ${pct(xp)} more XP in every skill` : ''}, ${duration(b.ticksLeft / 60 / 3600)} left${b.paused ? ' (paused while you do Firemaking)' : ''}`);
+  }
+  for (const [skill, a] of Object.entries(save.auroras ?? {})) {
+    const aurora = a.activated && a.charges > 0 ? gd.raw.auroras?.[a.event] : null;
+    if (aurora) lines.push(`${esc(aurora.name)}: ${exact(a.charges)} of ${exact(aurora.charges)} charges left in ${esc(skillName(ctx, skill))}`);
+  }
+  const ev = save.astrologyEvent;
+  const astro = ev?.activated && ev.charges > 0 ? gd.raw.astrologyEvents?.[ev.event] : null;
+  if (astro) lines.push(`${esc(astro.name)} from Astrology: ${exact(ev.charges)} of ${exact(astro.charges)} charges left`);
+  else if (ev && !ev.activated && gd.raw.astrologyEvents?.[ev.event]) lines.push(`${esc(gd.raw.astrologyEvents[ev.event].name)} from Astrology is waiting: switch it on in Astrology to use it`);
+  return lines.length ? `<p class="small accent-text">${lines.join('<br>')}</p>` : '';
+}
 
 function activityCard(ctx) {
   const a = currentActivity(ctx.gd, ctx.save.header, ctx.levels);
-  if (!a) return card('Right now', '<p class="muted">Not training anything (or the game was closed between actions).</p>');
+  if (!a) return card('Right now', `<p class="muted">Not training anything (or the game was closed between actions).</p>${boosts(ctx)}`);
   if (!a.method) {
     const best = a.bestXp ? `<p class="small">Best XP in ${esc(skillName(ctx, a.skill))}: ${methodLink(a.bestXp.method)} · ${num(a.bestXp.rates.xpPerHour)} XP/h</p>` : '';
-    return card('Right now', `<p><strong>${esc(a.label)}</strong></p><p class="muted small">This activity isn't analysed yet.</p>${best}`);
+    return card('Right now', `<p><strong>${esc(a.label)}</strong></p><p class="muted small">This activity isn't analysed yet.</p>${best}${boosts(ctx)}`);
   }
   const r = a.rates;
   let verdict;
@@ -30,7 +51,7 @@ function activityCard(ctx) {
   const m = measured
     ? `<p class="small muted">Measured over your last ${duration(ctx.measuredMinutes / 60)} of play: <strong>${num(measured)} XP/h</strong> (${pct(measured / r.xpPerHour)} of the estimate${ctx.gd.playerBonuses ? ' with your bonuses' : ''}; anything not modelled shows up here).</p>`
     : '';
-  return card('Right now', `<p><strong>${esc(a.label)}</strong> · ${num(r.xpPerHour)} XP/h · ${signed(r.profitPerHour)} GP/h${r.successChance != null && r.successChance < 1 ? ` · ${pct(r.successChance)} success` : ''}</p>${verdict}${money}${m}`);
+  return card('Right now', `<p><strong>${esc(a.label)}</strong> · ${num(r.xpPerHour)} XP/h · ${signed(r.profitPerHour)} GP/h${r.successChance != null && r.successChance < 1 ? ` · ${pct(r.successChance)} success` : ''}</p>${verdict}${money}${m}${boosts(ctx)}`);
 }
 
 // What the current action uses up and how long your stock lasts.

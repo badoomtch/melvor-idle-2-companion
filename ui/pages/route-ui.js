@@ -4,6 +4,7 @@ import { currentActivity } from '/engine/advisor.js';
 import { bankRoom, freeSpaceOptions } from '/engine/bank-space.js';
 import { describeStep, GATHER_VERBS, lockRoute, routeProgress, STEP_VERBS } from '/engine/route-progress.js';
 import { planRoute } from '/engine/route.js';
+import { shopOffer } from '/engine/shop.js';
 import { toolbeltForStep } from '/engine/toolbelt-advice.js';
 import { ago, badge, duration, esc, exact, pct } from '/ui/format.js';
 import { masteryPlanFor } from './mastery-ui.js';
@@ -119,15 +120,41 @@ function goalTools(ctx, steps) {
   return new Map([...groups.values()].map((g) => [g.first, toolsLine(ctx, g.t, g.hours, g.steps)]));
 }
 
+// A step your bank won't cover any more (counting what the steps before it make and use).
+function shortNote(ctx, st) {
+  if (!st.short) return '';
+  const { item, need, have } = st.short;
+  // Something you can do now makes up the difference: the step above does it, and the plan stays.
+  if (st.short.topUp) return `<span class="sub small muted">Needs ${exact(need)} ${itemLink(ctx, item)} and you'll have ${exact(have)}, so the step before this gets the other ${exact(need - have)}.</span>`;
+  const buy = buyNote(ctx, { kind: 'gather', item, qty: need - have });
+  return `<span class="sub small warn-text">Needs ${exact(need)} ${itemLink(ctx, item)} and you'll have ${exact(have)}. ${ctx.state.plan ? 'The plan updates with your next autosave.' : 'Get more first, or make a new plan.'}</span>${buy}`;
+}
+
+// The shop sells what a step gathers: the other way to get it, often far quicker. Buying ticks the
+// step off too, since steps count what's in your bank.
+function buyNote(ctx, st) {
+  if (st.kind !== 'gather' && st.kind !== 'make') return '';
+  const qty = Math.ceil(st.left?.qty ?? st.qty ?? 0);
+  if (!(qty > 0)) return '';
+  const wallet = ctx.save ? { ...(ctx.save.wallet ?? {}), GoldPieces: ctx.save.wallet?.GoldPieces ?? ctx.save.header?.gp ?? 0 } : null;
+  const offer = shopOffer(ctx.gd, st.item, qty, { levels: ctx.levels, purchased: ctx.save?.shopPurchases ?? {}, wallet });
+  if (!offer) return '';
+  const cost = [...offer.currencies.map((c) => `${exact(c.qty)} ${esc(ctx.gd.currencyName(c.currency))}`), ...offer.items.map((i) => `${exact(i.qty)} ${itemLink(ctx, i.item)}`)].join(' + ');
+  const short = offer.currencies.find((c) => c.have != null && c.have < c.qty);
+  return `<span class="sub small accent-text">Or buy ${exact(offer.qty)} in the <a href="#/shop">shop</a> for ${cost}${short ? ` (you have ${exact(short.have)} ${esc(ctx.gd.currencyName(short.currency))})` : ''}.</span>`;
+}
+
 function stepItem(ctx, leg, st, now, tools = '') {
   const notes = [];
   const progress = progressNote(st);
   if (progress) notes.push(progress);
+  if (st.topUp) notes.push('added because you have less than the plan expected');
+  const short = shortNote(ctx, st);
   const side = st.levelUps.filter((u) => st.kind !== 'train' || u.skill !== leg.skill);
   if (side.length) notes.push(`also gets you ${side.map((u) => `${esc(skillName(ctx, u.skill))} ${u.level}`).join(', ')}`);
   const mastery = masteryTasks(ctx, st.method.key).map((t) => `<span class="sub small accent-text">Counts for Mastery: ${esc(t.label)}${t.progress && !t.progress.level ? ` (${exact(Math.floor(t.progress.done))}/${exact(t.progress.of)})` : ''}</span>`);
   const cls = st === now ? (st.on ? ' class="now on"' : ' class="now"') : '';
-  return `<li${cls}>${tick(st)}<span class="route-text">${stepLine(ctx, st)}${st === now ? ` <span class="pill ${st.on ? 'good' : 'accent'}">${st.on ? "You're on this" : 'Next'}</span>` : ''}${notes.length ? `<span class="sub muted small">${notes.join(' · ')}</span>` : ''}${mastery.join('')}${tools}</span><span class="num">${duration(st.left.hours)}</span></li>`;
+  return `<li${cls}>${tick(st)}<span class="route-text">${stepLine(ctx, st)}${st === now ? ` <span class="pill ${st.on ? 'good' : 'accent'}">${st.on ? "You're on this" : 'Next'}</span>` : ''}${notes.length ? `<span class="sub muted small">${notes.join(' · ')}</span>` : ''}${short}${buyNote(ctx, st)}${mastery.join('')}${tools}</span><span class="num">${duration(st.left.hours)}</span></li>`;
 }
 
 // The bank won't hold what the plan brings in: how many slots, from when, and the easiest ways to free them.
@@ -152,14 +179,16 @@ export function routeCard(ctx) {
   if (!route.legs.length || route.finished) return card(title, `${intro}<p class="muted">Nothing left to unlock that the companion can plan.</p>${replan}`);
   const why = route.why?.ranOut
     ? `<p class="notice">New plan: you ran out of ${esc(ctx.gd.itemName(route.why.ranOut))} and nothing in the old one made more.</p>`
-    : route.why?.done ? '<p class="notice">New plan: you finished the last one.</p>' : '';
+    : route.why?.short
+      ? `<p class="notice">New plan: the old one needed ${exact(route.why.need)} ${esc(ctx.gd.itemName(route.why.short))} and you had ${exact(route.why.have)}, so this one starts from your bank as it is now.</p>`
+      : route.why?.done ? '<p class="notice">New plan: you finished the last one.</p>' : '';
   const now = route.step;
   // Only what's left: finished goals and steps drop off.
   const open = route.legs.filter((l) => !l.done);
   const goalOf = open.findIndex((l) => l.steps.includes(now));
   const nowTools = stepTools(ctx, now);
   const head = `<div class="route-now${now.on ? ' on' : ''}"><span><span class="route-label">${now.on ? "You're on it" : 'Do this now'}</span><strong>${stepLine(ctx, now)}</strong>
-    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
+    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${shortNote(ctx, now)}${buyNote(ctx, now)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
   const goals = open.map((leg, i) => {
     const left = leg.steps.filter((st) => !st.done);
     const gathers = left.filter((st) => st.kind === 'gather' || st.kind === 'make');

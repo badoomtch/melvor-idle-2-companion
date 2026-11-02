@@ -73,9 +73,21 @@ function buildIndex(gd) {
       ...(m.common ?? []).map((x) => x.item),
       ...(m.rare ?? []).map((x) => x.item),
       ...(m.completion ?? []).map((x) => x.item),
+      ...(m.rareSpecies ?? []).flatMap((s) => s.extra.map((x) => x.item)),
+      ...(m.events ?? []).map((x) => x.item),
     ];
     for (const item of new Set(outputs)) push(sources, item, { type: 'method', method: m });
     for (const i of m.ingredients ?? []) push(uses, i.item, { type: 'method', method: m, qty: i.qty });
+  }
+  // Upgrading in the bank: items (and gold) in, a better item out.
+  for (const upgrade of gd.raw?.itemUpgrades ?? []) {
+    push(sources, upgrade.item, { type: 'upgrade', upgrade });
+    for (const i of upgrade.costs.items) push(uses, i.item, { type: 'upgrade', upgrade, qty: i.qty });
+  }
+  // The Grain Mill turns crops from its storage into flour, sugar and grain.
+  for (const recipe of gd.raw?.grainMill?.recipes ?? []) {
+    push(sources, recipe.product.item, { type: 'mill', recipe });
+    for (const i of recipe.ingredients) push(uses, i.item, { type: 'mill', recipe, qty: i.qty });
   }
   for (const enemy of gd.enemies) {
     for (const d of enemyLoot(gd, enemy).items) push(sources, d.item, { type: 'enemy', enemy, chance: d.chance });

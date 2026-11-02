@@ -8,14 +8,16 @@ const PILL = { good: 'live', close: 'warn', off: 'bad', unknown: '' };
 // Likely reasons for a gap, so the number is actionable.
 function reason(row) {
   if (row.ratio == null) return row.method ? 'No estimate for this action' : 'Not modelled (combat or an unmodelled skill)';
-  if (row.ratio > 1.05) return 'You get more than estimated: a bonus the companion doesn\'t count yet';
-  if (row.ratio < 0.95) return 'You get less than estimated: stops, running out, failures, or a gap in the model';
+  // Older records only have today's estimate, which counts any bonus you've got since you did it.
+  const when = row.atTheTime ? '' : '. Measured before the companion noted its estimate, so this compares with today\'s levels and bonuses';
+  if (row.ratio > 1.05) return `You get more than estimated: a bonus the companion doesn't count yet${when}`;
+  if (row.ratio < 0.95) return `You get less than estimated: stops, running out, failures, or a gap in the model${when}`;
   return 'Matches';
 }
 
 export function accuracy(ctx) {
   const { gd, state } = ctx;
-  const head = pageHead('Accuracy', `How the estimates compare with what each action actually gave you. While the companion runs it adds up the XP and items between autosaves of the same action (actions need ${MIN_SECONDS / 60} minutes of play to show).`);
+  const head = pageHead('Accuracy', `How the estimates compare with what each action actually gave you. While the companion runs it adds up the XP and items between autosaves of the same action, and what it predicted for that stretch with your levels and bonuses at the time (actions need ${MIN_SECONDS / 60} minutes of play to show).`);
   if (!ctx.save) return `${head}${noSaveCard(ctx)}`;
   const obs = state.observations;
   if (!obs || obs.id !== ctx.save.id) return `${head}<p class="loading">Loading…</p>`;

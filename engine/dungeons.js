@@ -47,12 +47,13 @@ export function dungeonRun(gd, dungeon, { gear, stance, spell = null, levels, fo
     for (const { enemy: id, weight } of group.enemies) {
       const share = (group.count * weight) / total;
       const enemy = gd.enemyById.get(id);
-      const p = buildPlayer(gd, { gear, stance, spell, levels, darkness: dungeon.darkness, area, slayerTask: !!gd.player?.slayerTasks?.includes(id) });
+      const p = buildPlayer(gd, { gear, stance, spell, levels, darkness: dungeon.darkness, area, slayerTask: !!gd.player?.slayerTasks?.includes(id), food });
       const r = fight(gd, p, buildEnemy(gd, enemy), { food });
       if (!(r.killsPerHour > 0)) return null;
       const cycleMs = HOUR_MS / r.killsPerHour; // spawn wait + the fight
       ms += share * cycleMs;
-      if (Number.isFinite(r.hoursToDeath)) hazard += share * (r.killSeconds / 3600) / r.hoursToDeath;
+      // hoursToDeath counts the spawn waits too, so deaths per kill is one over (it x kills per hour).
+      if (Number.isFinite(r.hoursToDeath)) hazard += share / (r.hoursToDeath * r.killsPerHour);
       foodPerRun += share * (r.foodPerHour ?? 0) / r.killsPerHour;
       for (const [skill, v] of Object.entries(r.xpPerHour)) xpPerRun[skill] = (xpPerRun[skill] ?? 0) + (share * v) / r.killsPerHour;
     }

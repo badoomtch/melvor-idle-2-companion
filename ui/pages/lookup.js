@@ -2,7 +2,7 @@
 import { GP } from '/engine/gamedata.js';
 import { combatLevel, enemyLoot, itemDetails, search, triesFor } from '/engine/lookup.js';
 import { computeRates } from '/engine/rates.js';
-import { esc, exact, gp, iconImg, num, pct } from '/ui/format.js';
+import { duration, esc, exact, gp, iconImg, num, pct } from '/ui/format.js';
 import { card, enc, itemLink, methodDetail, methodIcon, methodLink, pageHead, requirementText, signed, skillName, stat, table } from './shared.js';
 
 // ---------- Lookup ----------
@@ -18,20 +18,29 @@ function lookupResults(ctx) {
     .join('')}</ul>`;
 }
 
+// "Mithril Helmet + 40 Gold Bar + 5,000 GP": what an item upgrade takes.
+export const upgradeFrom = (ctx, u) => [...u.costs.items.map((i) => `${i.qty > 1 ? `${exact(i.qty)} ` : ''}${itemLink(ctx, i.item)}`), ...u.costs.currencies.map((c) => `${exact(c.qty)} ${esc(ctx.gd.currencyName(c.currency))}`)].join(' + ');
+// "20 Grain every 5 min from 10 Wheat": a Grain Mill batch.
+export const millBatch = (ctx, r) => `${exact(r.product.qty)} every ${duration(ctx.gd.raw.grainMill.baseIntervalMs / 3_600_000)} from ${r.ingredients.map((i) => `${exact(i.qty)} ${esc(ctx.gd.itemName(i.item))}`).join(' and ')}`;
+
 function itemPage(ctx, id) {
   const { gd } = ctx;
   const d = itemDetails(gd, id);
   if (!d.info) return card('Not found', '<p class="muted">That item isn\'t in the companion data (it may not be in the demo).</p>');
+  const needs = (list) => (list.length ? ` · needs ${requirementText(ctx, list)}` : '');
   const sources = d.sources.map((s) => {
     if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}</span></li>`;
     if (s.type === 'enemy') return `<li><a href="#/lookup/enemy/${enc(s.enemy.id)}">${esc(s.enemy.name)}</a> <span class="muted small">${pct(s.chance, s.chance < 0.01 ? 2 : 1)} per kill</span></li>`;
+    if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span></li>`;
+    if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span></li>`;
     return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span></li>`;
   });
-  const uses = d.uses.map((u) =>
-    u.type === 'method'
-      ? `<li>${methodLink(u.method)} <span class="muted small">${esc(skillName(ctx, u.method.skill))} ${u.method.level} · uses ${u.qty}</span></li>`
-      : `<li><a href="#/lookup/shop/${enc(u.purchase.id)}">${esc(u.purchase.name)}</a> <span class="muted small">Shop cost × ${u.qty}</span></li>`,
-  );
+  const uses = d.uses.map((u) => {
+    if (u.type === 'method') return `<li>${methodLink(u.method)} <span class="muted small">${esc(skillName(ctx, u.method.skill))} ${u.method.level} · uses ${u.qty}</span></li>`;
+    if (u.type === 'upgrade') return `<li>Upgrade into ${itemLink(ctx, u.upgrade.item)} <span class="muted small">In the bank · uses ${exact(u.qty)}</span></li>`;
+    if (u.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(u.recipe.name)} <span class="muted small">${exact(u.qty)} a batch</span></li>`;
+    return `<li><a href="#/lookup/shop/${enc(u.purchase.id)}">${esc(u.purchase.name)}</a> <span class="muted small">Shop cost × ${u.qty}</span></li>`;
+  });
   const owned = ctx.bank?.[id];
   return card(`${iconImg(d.info.icon, 'icon lg')}${esc(d.name)}`, `<dl class="kv">
       <dt>Sells for</dt><dd>${d.info.currency === GP ? `${exact(d.info.sell)} GP` : `${exact(d.info.sell)} ${esc(gd.currencyName(d.info.currency))}`}</dd>

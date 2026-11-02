@@ -67,7 +67,8 @@ test('food is ranked by skilling time per hour of fighting, and auto-eat only us
   assert.ok(rows.length > 0);
   const cap = p.hitpoints - Math.round(0.25 * p.hitpoints);
   for (const r of rows) {
-    assert.ok(r.healUsed <= Math.min(r.heal, cap) + 1e-9);
+    // Eating from under the threshold can heal more than the gap above it, but never past full.
+    assert.ok(r.healUsed <= Math.min(r.heal, p.hitpoints - 1) + 1e-9 && r.healUsed >= Math.min(r.heal, cap) - 1e-9);
     if (r.make) close(r.make.perCombatHour, r.make.hoursEach * r.perHour);
   }
   const shrimp = rows.find((r) => r.item === 'MelvorBase:Shrimp');
@@ -90,4 +91,23 @@ test('gear upgrades include better gear you can make from your bank, and gear a 
   // Nothing listed is already owned, and "soon" rows say which levels they need.
   assert.ok(![...up.ready, ...up.soon].some((r) => owned.has(r.item)));
   for (const r of up.soon) assert.ok(r.needs.length > 0 && r.needs.every((n) => n.level > (levels[n.skill] ?? 1)));
+  // Each row carries the fight's numbers before and after, to say why it's better.
+  assert.ok(scimitar.why.after.killSeconds < scimitar.why.before.killSeconds);
+});
+
+test('a small gain is listed when it is quick to get, and quick wins come first', () => {
+  // Hard Leather Chaps on, the Leather and Iron Bars for Studded Leather Chaps in the bank: pure
+  // defence, so no more XP, but less damage for a few seconds of Crafting.
+  const levels = at(35);
+  const gear = ['MelvorBase:HardLeatherChaps', 'MelvorBase:MapleBow', 'MelvorBase:IronArrows'];
+  const bank = { ...Object.fromEntries(gear.map((id) => [id, id.endsWith('Arrows') ? 100_000 : 1])), 'MelvorBase:Leather': 4, 'MelvorBase:IronBar': 3, 'MelvorBase:Shrimp': 10_000 };
+  const owned = ownedEquipment(gd, bank, null);
+  const rec = recommendStyle(gd, { style: 'Ranged', owned, levels, bank, food: 'MelvorBase:Shrimp' });
+  assert.ok(rec?.gear?.enemy);
+  const up = gearUpgrades(gd, { rec, owned, levels, bank, food: 'MelvorBase:Shrimp', index: producerIndex(gd, levels) });
+  const chaps = up.ready.find((r) => r.item === 'MelvorBase:StuddedLeatherChaps');
+  assert.ok(chaps, 'Studded Leather Chaps are listed');
+  assert.ok(chaps.source.hours < 10 / 60 && chaps.damageCut > 0);
+  const rate = (r) => r.worth / (r.source.hours + 1 / 12);
+  for (let i = 1; i < up.ready.length; i++) assert.ok(rate(up.ready[i - 1]) >= rate(up.ready[i]) - 1e-9);
 });

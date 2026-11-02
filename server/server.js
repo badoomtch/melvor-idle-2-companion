@@ -12,7 +12,8 @@ import { stat, readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createGameData, ownedItems } from '../engine/gamedata.js';
+import { currentActivity } from '../engine/advisor.js';
+import { createGameData, ownedItems, playerBonuses, playerState } from '../engine/gamedata.js';
 import { activityKey, measureFlows } from '../engine/supplies.js';
 import { createXpTable } from '../engine/xp.js';
 import { createAlertWatcher } from './alerts.js';
@@ -85,8 +86,24 @@ const routes = createRouteWatcher({ gd: createGameData(data), dir: HISTORY_DIR, 
 // unless it's turned off in Settings.
 const updates = createUpdateCheck({ repo: process.env.MELVOR_COMPANION_REPO || repoFrom(pkg), current: appVersion, enabled: () => alerts.settings.checkUpdates !== false });
 
+// What the companion predicted for the action a save shows, with that save's levels and bonuses, so a
+// measurement is compared with the estimate of its own time, not one made after later upgrades.
+const estimateGd = createGameData(data);
+function predicted(parsed) {
+  if (!parsed?.skills) return null;
+  try {
+    const levels = Object.fromEntries(Object.entries(parsed.skills).map(([k, s]) => [k, s.level]));
+    estimateGd.player = playerState(parsed, estimateGd);
+    estimateGd.playerBonuses = alerts.settings.useBonuses === false ? null : playerBonuses(estimateGd, parsed);
+    const a = currentActivity(estimateGd, parsed.header, levels);
+    return a?.skill && a.rates ? { skill: a.skill, xpPerHour: a.rates.xpPerHour } : null;
+  } catch {
+    return null;
+  }
+}
+
 // Two consecutive autosaves of the same action: add what it gave to that action's record.
-function recordObservation(id, before, after, beforeStock, afterStock) {
+function recordObservation(id, before, after, beforeStock, afterStock, prediction = null) {
   if (!before || !after.activity || before.activity !== after.activity) return;
   const seconds = (after.t - before.t) / 1000;
   if (!(seconds > 0) || seconds > 120) return;
@@ -98,7 +115,9 @@ function recordObservation(id, before, after, beforeStock, afterStock) {
       if (d) items[k] = d;
     }
   }
-  observations.add(id, after.activity, seconds, xp, items).catch((e) => console.error(`Could not record action: ${e.message}`));
+  // The same stretch's XP in the action's skill against what was predicted for it.
+  const timed = prediction ? { seconds, xp: xp[prediction.skill] ?? 0, est: (prediction.xpPerHour * seconds) / 3600 } : null;
+  observations.add(id, after.activity, seconds, xp, items, timed).catch((e) => console.error(`Could not record action: ${e.message}`));
 }
 
 // Bank value at sell prices (GP only), for the long-term history.
@@ -147,7 +166,7 @@ function refresh() {
         if (entry.history.length > HISTORY_LIMIT) entry.history.shift();
         entry.stock.push({ t: snapshot.t, activity: snapshot.activity, stock: ownedItems(parsed) });
         if (entry.stock.length > STOCK_LIMIT) entry.stock.shift();
-        recordObservation(f.id, previous, snapshot, previousStock, entry.stock.at(-1));
+        recordObservation(f.id, previous, snapshot, previousStock, entry.stock.at(-1), predicted(before ?? parsed));
         entry.flows = measureFlows(entry.stock);
         historyStore.record(f.id, historyPoint(parsed, snapshot)).catch((e) => console.error(`Could not write history: ${e.message}`));
         try {

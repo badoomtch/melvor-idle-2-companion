@@ -42,7 +42,7 @@ const state = {
   goals: store.get('goals', []),
   theme: store.get('theme', 'system'),
   notify: store.get('notify', false),
-  alerts: { runningOut: true, stopped: true, planSteps: true, minutes: 15, ...store.get('alerts', {}) },
+  alerts: { runningOut: true, stopped: true, planSteps: true, harvests: true, ranch: true, minutes: 15, ...store.get('alerts', {}) },
   useBonuses: store.get('useBonuses', true),
   // The plan on What next: the companion keeps it and moves it on with each autosave (server/route-watcher.js).
   plan: null,
@@ -62,7 +62,8 @@ const state = {
     goalSkill: null,
     goalTarget: 10,
     combat: { style: null, skill: '', sort: 'xp', target: {}, showAll: false, showRisky: false },
-    rare: { band: 'all', missing: false },
+    // Kept between visits: the rarity picked and "Only ones I haven't found".
+    rare: { band: 'all', missing: false, ...store.get('rare', {}) },
     away: { hours: store.get('awayHours', 8), goal: 'xp', skill: '' },
   },
 };
@@ -101,6 +102,8 @@ async function syncServerAlerts(enabled = state.serverAlerts?.enabled) {
       runningOut: state.alerts.runningOut,
       stopped: state.alerts.stopped,
       planSteps: state.alerts.planSteps !== false,
+      harvests: state.alerts.harvests !== false,
+      ranch: state.alerts.ranch !== false,
       minutes: state.alerts.minutes,
       useBonuses: state.useBonuses,
       checkUpdates: state.serverAlerts.checkUpdates !== false,
@@ -550,9 +553,11 @@ const ACTIONS = {
   },
   rareBand(el) {
     state.ui.rare.band = el.dataset.value;
+    store.set('rare', state.ui.rare);
   },
   rareMissing() {
     state.ui.rare.missing = !state.ui.rare.missing;
+    store.set('rare', state.ui.rare);
   },
   toggle(el) {
     const key = el.dataset.key;

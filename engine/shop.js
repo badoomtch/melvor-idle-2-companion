@@ -12,6 +12,24 @@ export function ratesWithBonuses(gd, method, level, effects) {
 }
 
 // GP cost of a purchase (items at sell price); other currencies are listed separately.
+// The shop's cheapest offer for `qty` of an item you can buy now: how many purchases, what they cost
+// and whether your wallet covers the currencies. Only purchases of that one item (not bundles), and only
+// while the buy limit allows that many. `wallet` is { currencyId: amount }; null skips the check.
+export function shopOffer(gd, item, qty, { levels, purchased = {}, wallet = null } = {}) {
+  let best = null;
+  for (const p of gd.shop) {
+    const gives = p.provides.items;
+    if (gives.length !== 1 || gives[0].item !== item || p.provides.currencies?.length || !purchaseStatus(gd, p, levels, purchased).ok) continue;
+    const times = Math.ceil(qty / gives[0].qty);
+    if (p.buyLimit > 0 && times > p.buyLimit - (purchased[p.id] ?? 0)) continue;
+    const currencies = p.costs.currencies.map((c) => ({ currency: c.currency, qty: c.qty * times, have: wallet ? wallet[c.currency] ?? 0 : null }));
+    const items = p.costs.items.map((i) => ({ item: i.item, qty: i.qty * times }));
+    const gp = purchaseCost(gd, p).gp * times;
+    if (!best || gp < best.gp) best = { purchase: p, times, qty: times * gives[0].qty, currencies, items, gp, affordable: currencies.every((c) => c.have == null || c.have >= c.qty) };
+  }
+  return best;
+}
+
 export function purchaseCost(gd, p) {
   const gpCost = p.costs.currencies.filter((c) => c.currency === GP).reduce((s, c) => s + c.qty, 0) + p.costs.items.reduce((s, i) => s + i.qty * gd.itemValue(i.item), 0);
   return { gp: gpCost, other: p.costs.currencies.filter((c) => c.currency !== GP) };

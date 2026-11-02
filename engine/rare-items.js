@@ -3,7 +3,7 @@
 // kill or opening; anything a source gives at least 1 time in 20 (or a shop sells) isn't rare.
 // Isomorphic.
 import { enemyLoot, itemDetails, triesFor } from './lookup.js';
-import { computeRates, expectTable } from './rates.js';
+import { computeRates, eventQuantity, expectTable } from './rates.js';
 
 // Rarest first. `from` is the best chance per try that still counts as this band.
 export const RARITY = [
@@ -35,7 +35,10 @@ function chanceIndex(gd) {
     } catch {
       continue;
     }
-    for (const o of r.outputs) add(o.item, { type: 'method', method: m, p: Math.min(1, o.perHour / r.cyclesPerHour) });
+    // A find's rarity is its chance per action, however many it gives at once.
+    const found = new Set((m.events ?? []).map((e) => e.item));
+    for (const o of r.outputs) if (!found.has(o.item)) add(o.item, { type: 'method', method: m, p: Math.min(1, o.perHour / r.cyclesPerHour) });
+    for (const e of m.events ?? []) add(e.item, { type: 'method', method: m, p: e.chance, qty: eventQuantity(e, m.level, m.interval) });
   }
   for (const enemy of gd.enemies) for (const d of enemyLoot(gd, enemy).items) add(d.item, { type: 'enemy', enemy, p: d.chance });
   for (const [id, it] of Object.entries(gd.items)) {
@@ -92,8 +95,10 @@ export function rareItems(gd, { levels, bestFights = null, owned = {}, found = n
         if (!req.ok || req.unknown.length) {
           return { ...s, now: false, needs: req.missing.length === levelsShort.length && !req.unknown.length ? levelsShort : null };
         }
-        const perHour = rateOf(s.method).outputs.find((o) => o.item === item)?.perHour ?? 0;
-        return { ...s, now: perHour > 0, hours: perHour > 0 ? Math.LN2 / perHour : Infinity, equip: req.equip };
+        const r = rateOf(s.method);
+        const perHour = r.outputs.find((o) => o.item === item)?.perHour ?? 0;
+        const tries = r.chancePerCycle?.[item] ? r.chancePerCycle[item] * r.cyclesPerHour : perHour;
+        return { ...s, now: perHour > 0, hours: tries > 0 ? Math.LN2 / tries : Infinity, equip: req.equip };
       }
       if (s.type === 'enemy') {
         const fight = bestFights?.get(s.enemy.id);

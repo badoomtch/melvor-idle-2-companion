@@ -4,7 +4,7 @@
 // everything still to do that uses its item (you did things in another order, already had them, or what
 // needed them is done). Training done means the rest of that goal before it is done too. Once done, a
 // step stays done, even when a later step uses up what it made. Isomorphic.
-import { minEach } from './advisor.js';
+import { minEach, obtain, producerIndex } from './advisor.js';
 import { computeRates } from './rates.js';
 
 // The route as plain data to keep between autosaves: methods by key.
@@ -92,7 +92,8 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
         left = { actions: Math.max(0, actions), qty, hours: Math.max(0, actions) / rates.cyclesPerHour };
       }
       const uses = new Map(rates.inputs.map((i) => [i.item, i.perHour / rates.cyclesPerHour]));
-      return { ...saved, method, left, fromBank: left, uses, levelUps: saved.levelUps };
+      const makes = new Map(rates.outputs.map((o) => [o.item, o.perHour / rates.cyclesPerHour]));
+      return { ...saved, method, left, fromBank: left, uses, makes, levelUps: saved.levelUps };
     });
     return { ...leg, unlocks: leg.unlocks.map((k) => gd.methodByKey.get(k)).filter(Boolean), steps };
   });
@@ -142,11 +143,46 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
     if (!bank) return null;
     return computeRates(gd, st.method, gd.levelOf(levels, st.method.skill)).inputs.find((i) => (bank[i.item] ?? 0) < minEach(st.method, i.item))?.item ?? null;
   };
+  for (const leg of legs) for (const st of leg.steps) st.done = done.has(st.id);
+  // Every step still to do, in order, against your bank as the steps before it will leave it (what they
+  // make added, what they use taken away). A step that won't have what it needs, because you used it on
+  // something else, sold it, or had bad luck, is marked short. When something you can do now makes up the
+  // shortfall, top-up steps go in just before it and the plan carries on (they drop off once your bank
+  // covers it); only a shortfall nothing can make (`short`) means the plan no longer works.
+  let short = null;
+  if (bank) {
+    const stock = { ...bank };
+    let index = null;
+    for (const leg of legs) {
+      for (let i = 0; i < leg.steps.length; i++) {
+        const st = leg.steps[i];
+        if (st.done) continue;
+        for (const [item, each] of st.uses) {
+          const need = each * st.left.actions;
+          const have = Math.max(0, stock[item] ?? 0);
+          // Less than one action's worth short is rounding, not a problem.
+          if (need - have >= each && !st.short) {
+            st.short = { item, need: Math.ceil(need), have: Math.floor(have) };
+            index ??= producerIndex(gd, levels);
+            const top = topUp(gd, index, stock, item, st.short.need - st.short.have, st.id);
+            if (top) {
+              st.short.topUp = true;
+              leg.steps.splice(i, 0, ...top.steps);
+              i += top.steps.length;
+              for (const u of top.uses) stock[u.item] = (stock[u.item] ?? 0) - u.qty;
+              stock[item] = have + (st.short.need - st.short.have);
+            } else short ??= { step: st.id, ...st.short };
+          }
+          stock[item] = (stock[item] ?? 0) - need;
+        }
+        for (const [item, each] of st.makes) stock[item] = (stock[item] ?? 0) + each * st.left.actions;
+      }
+    }
+  }
   let at = 0;
   let step = null;
   let blocked = null;
   for (const leg of legs) {
-    for (const st of leg.steps) st.done = done.has(st.id);
     leg.done = leg.steps.every((st) => st.done);
     leg.at = at;
     leg.hours = leg.steps.reduce((s, st) => s + (st.done ? 0 : st.left.hours), 0);
@@ -178,7 +214,25 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
       space = { short: coming.length - room.free, free: room.free, items: coming, at: where?.id ?? null };
     }
   }
-  return { legs, step, finished: !step, broken: false, blocked, space, newlyDone, hours: at };
+  return { legs, step, finished: !step, broken: false, blocked, short, space, newlyDone, hours: at };
+}
+
+// Steps that make up a shortfall of `qty` with what you can do now, deepest materials first (obtain()),
+// from `stock` as the plan will have it then, not counting what's left of the item itself (the step
+// short of it already counts on that). Null when nothing you can do makes it.
+function topUp(gd, index, stock, item, qty, forStep) {
+  const pool = new Map(Object.entries(stock).map(([k, v]) => [k, Math.max(0, v)]));
+  pool.set(item, 0);
+  const got = obtain(index, pool, item, qty);
+  if (!got.method || !Number.isFinite(got.hours)) return null;
+  const parts = [...got.needs, { item, qty: got.short, method: got.method, makes: got.makes, actions: got.actions, hours: got.runHours }];
+  if (parts.some((p) => !p.method || !p.actions)) return null;
+  const steps = parts.map((p, k) => {
+    const left = { actions: p.actions, qty: p.qty, hours: p.hours };
+    return { id: `topup:${forStep}:${k}`, kind: p.makes ? 'make' : 'gather', topUp: forStep, method: p.method, item: p.item, qty: p.qty, actions: p.actions, hours: p.hours,
+      left, fromBank: left, uses: new Map(), makes: new Map(), levelUps: [], newItems: [], done: false };
+  });
+  return { steps, uses: got.uses.filter((u) => u.item !== item) };
 }
 
 // What you do in each kind of skill, to start a step with: "Mine 37 Iron Ore", "Make Oak Boomerang × 931".

@@ -284,6 +284,8 @@ for (const r of O.MiningRecipe ?? []) {
     breakChance: r.BaseProductChance ?? 1,
     product: { item: full(r.Product?.Item), qty: qty(r.Product) },
     perHit: chanceItems(r.RandomProductsPerHit),
+    // Some pickaxes can turn a mined ore straight into its bar (MiningActionComponent).
+    ...(r.BarItem ? { bar: full(r.BarItem) } : {}),
   });
 }
 
@@ -424,6 +426,7 @@ for (const it of O.Item ?? []) {
   trapsByType.set(full(c.TrapType), list);
 }
 const huntingLocations = new Map((O.HuntingLocation ?? []).map((l) => [full(l.Id), l]));
+const huntingSpecies = new Map((O.HuntingAnimalSpecies ?? []).map((s) => [full(s.Id), s]));
 for (const r of O.HuntingAnimal ?? []) {
   if (isLocked(r)) { skip('locked'); continue; }
   const location = huntingLocations.get(full(r.Location));
@@ -440,6 +443,10 @@ for (const r of O.HuntingAnimal ?? []) {
     products: chanceItems(r.Products),
     trapType: r.TrapType ? nameOf(r.TrapType) : null,
     traps: r.TrapType ? trapsByType.get(full(r.TrapType)) ?? [] : [],
+    // A rare species (ActiveHuntingAnimal.RollForRareSpecies) doubles the catch and can add extra drops.
+    rareChance: r.BaseRareSpeciesChance ?? 0,
+    rareSpecies: (r.RareSpecies ?? []).map((x) => ({ s: huntingSpecies.get(full(x.Species)), weight: x.Weight ?? 1 })).filter((x) => x.s && !isLocked(x.s))
+      .map(({ s, weight }) => ({ id: s.Id, name: s.DisplayName, weight, extra: chanceItems(s.ExtraProducts) })),
   });
 }
 
@@ -667,8 +674,8 @@ for (const [registry, kind] of [['CombatArea', 'area'], ['Dungeon', 'dungeon']])
 }
 
 // Enemy passives (CombatPassive), in the forms the combat model uses: styles it's immune to, healing
-// each turn, a ramp that stacks during the fight, damage over time and stuns it puts on you, and a
-// raised minimum hit. Anything else is listed by name only.
+// each turn, a ramp that stacks during the fight, damage over time and stuns it puts on you, a raised
+// minimum hit and attack reflect. Anything else is listed by name only.
 const passiveById = new Map((O.CombatPassive ?? []).map((p) => [full(p.Id), p]));
 const effectRegistry = (key) => new Map((O[key] ?? []).map((x) => [full(x.Id), x]));
 const dotEffects = effectRegistry('DamageOverTimeEffect');
@@ -677,7 +684,9 @@ const healEffects = effectRegistry('EndOfTurnHealingEffect');
 const stunEffects = effectRegistry('StunEffect');
 const TRIGGERS = { WhenHit: 'playerHit', WhenAttackEvaded: 'playerMiss', OnHit: 'enemyHit', OnAttack: 'enemyAttack' };
 function passiveOf(ids) {
-  const out = { names: [], immuneTo: [], healPerTurn: 0, ramps: [], dots: [], stuns: [], selfStuns: [], minHitOfMax: 0 };
+  const out = { names: [], immuneTo: [], healPerTurn: 0, ramps: [], dots: [], stuns: [], selfStuns: [], minHitOfMax: 0, reflect: 0, effectMods: [] };
+  // Combat effect stats (CombatEffectStats), for effects on (or, for lifesteal, from) the enemy or you.
+  const EFFECT_STATS = { AvoidanceChance: 'EffectAvoidanceChance', PercentDamageTaken: 'EffectDamageTaken', EffectLifesteal: 'EffectLifesteal' };
   for (const id of ids ?? []) {
     const p = passiveById.get(full(id));
     if (!p) continue;
@@ -685,6 +694,12 @@ function passiveOf(ids) {
     for (const m of p.Modifiers?.Component ?? []) {
       if (m.Stat?.Name === 'ImmunityFrom' && m.LocalContext?.CombatStyle) out.immuneTo.push(local(m.LocalContext.CombatStyle));
       if (m.Stat?.Name === 'MinHitBasedOnMaxHit') out.minHitOfMax += m.Value ?? 0;
+      // Thorn Body, Thornhide: part of the damage your attacks do comes back to you (ReflectAttackDamage).
+      if (m.Stat?.Name === 'PercentAttackReflect') out.reflect += m.Value ?? 0;
+      // Crimson Eyes, Acid Shambler, Blood Circulation: effects it avoids, and lifesteal from its own.
+      if (local(m.Stat?.StatsType) === 'CombatEffect' && EFFECT_STATS[m.Stat.Name]) {
+        out.effectMods.push({ who: local(m.LocalContext?.Component?.Component) === 'Player' ? 'player' : 'enemy', stat: EFFECT_STATS[m.Stat.Name], value: m.Value ?? 0, ...(m.LocalContext?.Effect ? { effect: local(m.LocalContext.Effect) } : {}) });
+      }
     }
     for (const c of p.Modifiers?.CombatEffect ?? []) {
       const type = local(c.Modifier?.Effect?.Type);
@@ -709,9 +724,9 @@ function passiveOf(ids) {
       } else if (type === 'DamageOverTime' && !toSelf) {
         const d = dotEffects.get(effect);
         const f = d?.DamagePerProc?.Formula ?? {};
-        if (d) out.dots.push({ name: d.DisplayName, on, chance: c.Chance ?? 1, formula: local(f.Type), percent: f.Data?.Percent ?? 0, procs: d.ProcCount ?? 1, interval: d.ProcInterval ?? 1000, maxStacks: d.MaxStacks ?? 1 });
+        if (d) out.dots.push({ name: d.DisplayName, effect: local(effect), on, chance: c.Chance ?? 1, formula: local(f.Type), percent: f.Data?.Percent ?? 0, procs: d.ProcCount ?? 1, interval: d.ProcInterval ?? 1000, maxStacks: d.MaxStacks ?? 1 });
       } else if (type === 'Stun' && !toSelf) {
-        out.stuns.push({ on, chance: c.Chance ?? 1, turns: stunTurns() });
+        out.stuns.push({ effect: local(effect), on, chance: c.Chance ?? 1, turns: stunTurns() });
       }
     }
   }
@@ -794,12 +809,58 @@ for (const c of O.AstrologyConstellation ?? []) {
   if (per.length) astrology.perMinorNode[c.Id] = per;
 }
 
+// Hunting choices per animal (ActiveHuntingAnimal): its preferred bait (a bonus while you have some, one
+// used per trap attempt), trapless hunting where it's allowed (a bonus, no traps used), and what surveys
+// can turn up (at most one find per catch, HuntingActionComponent).
+for (const m of methods.filter((x) => x.kind === 'hunting')) {
+  const r = (O.HuntingAnimal ?? []).find((a) => a.Id === m.id);
+  if (!r) continue;
+  if (r.PreferredBait && r.BaitModifierTemplate) m.bait = { item: full(r.PreferredBait), effects: normEffects({ Component: r.BaitModifierTemplate }) };
+  if (r.EnableTrapless && r.TraplessBonuses) m.trapless = { requires: normReqs(r.TraplessRequirements), effects: normEffects({ Component: r.TraplessBonuses }) };
+  m.survey = chanceItems(r.SurveyingProducts);
+}
+
+// Finds while you work. Every Astrology study rolls the global sightings and the constellation's own
+// events (AstrologyActionStats.GetAllEvents); a find gives its base quantity plus 0 to Astrology level ×
+// LevelScalingQuantity (AstrologyActionComponent.GrantRandomItems). Burning logs rolls the Firemaking
+// events once their Astrology nodes are unlocked, the quantity scaling with the burn time in seconds
+// (FiremakingActionComponent.RollEvent).
+const astrologyItemEvents = new Map((O.AstrologyItemEvent ?? []).map((e) => [full(e.Id), e]));
+for (const m of methods.filter((x) => x.kind === 'astrology')) {
+  const c = (O.AstrologyConstellation ?? []).find((r) => r.Id === m.id);
+  const ids = [...(EC[full('Astrology')]?.GlobalEvents ?? []).map((e) => e.Id), ...(c?.Events ?? [])];
+  m.events = ids.map((id) => astrologyItemEvents.get(full(id))).filter((e) => e && !isLocked(e))
+    .map((e) => ({ name: e.DisplayName?.Singular ?? nameOf(e.Id), item: full(e.Item), chance: e.Chance, qty: e.BaseQuantity, perLevel: (e.LevelScalingQuantity ?? 0) / 2, requires: normReqs(e.Requirements) }));
+}
+const firemakingEvents = (EC[full('Firemaking')]?.Events ?? []).map((ref) => (O.FiremakingEvent ?? []).find((e) => full(e.Id) === full(ref.Id))).filter((e) => e && !isLocked(e));
+for (const m of methods.filter((x) => x.kind === 'firemaking')) {
+  const r = (O.FiremakingRecipe ?? []).find((x) => x.Id === m.id);
+  m.events = firemakingEvents.filter((e) => !e.Category || full(e.Category) === full(r?.Category))
+    .map((e) => ({ name: e.DisplayName, item: full(e.Reward.Item), chance: e.Chance, qty: e.Reward.Quantity, perSecond: true, requires: normReqs(e.Requirements) }));
+}
+
+// Collectables from rare species, for the Mastery tasks that count how many you've found.
+const huntingCollectables = [...new Set((O.HuntingAnimalSpecies ?? []).filter((s) => !isLocked(s)).flatMap((s) => (s.ExtraProducts ?? []).filter((x) => x.IsCollectable).map((x) => local(x.Item))))];
+
 // Hunting journal: each level an animal's journal reaches adds bonuses for that animal
 // (ActiveHuntingAnimal.AddJournalModifiers).
 const huntingJournalBonuses = (O.HuntingJournalBonus ?? [])
   .map((b) => ({ level: b.UnlockLevel ?? 1, effects: normEffects({ Component: b.JournalModifierTemplate }) }))
   .filter((b) => b.effects.length)
   .sort((a, b) => a.level - b.level);
+
+// Bonfires (lit in Firemaking, they burn down while you aren't doing Firemaking) and each skill's Aurora
+// (a rare event with a number of charges): bonuses that only count while they're on.
+const bonfires = Object.fromEntries((O.FiremakingBonfire ?? []).filter((b) => !isLocked(b)).map((b) => [b.Id, { name: b.DisplayName, hours: b.MaxDuration ?? 0, effects: normEffects(b.Bonuses) }]));
+// Bonus events Astrology can turn up while you study (AstrologyBonusesEvent): one at a time, until its charges run out.
+const astrologyEvents = Object.fromEntries((O.AstrologyBonusesEvent ?? []).filter((e) => !isLocked(e)).map((e) => [e.Id, { name: singular(e.DisplayName, e.Id), charges: e.Charges ?? 0, effects: normEffects(e.Bonuses) }]));
+const auroras = Object.fromEntries((O.RareBonusesEvent ?? []).filter((e) => !isLocked(e)).map((e) => [e.Id, { name: singular(e.DisplayName, e.Id), charges: e.Charges ?? 0, effects: normEffects(e.Bonuses) }]));
+
+// Ranching variants' own product and XP bonuses (SelfBonuses), and enclosure names and sizes, for the
+// herd the save holds (engine/ranch.js).
+const variantBonus = (v, stat) => (v?.SelfBonuses ?? []).filter((b) => b.Stat?.Name === stat).reduce((s, b) => s + (b.Value ?? 0), 0);
+const ranchingVariantBonuses = Object.fromEntries((O.RanchingAnimalVariant ?? []).map((v) => [local(v.Id), { name: v.DisplayName, productPercent: variantBonus(v, 'PercentProductQuantity'), xpPercent: variantBonus(v, 'PercentXPGained') }]));
+const ranchingEnclosures = Object.fromEntries((O.RanchingEnclosure ?? []).map((e) => [local(e.Id), { name: e.DisplayName, limit: e.AnimalLimit }]));
 
 // Mining's stone and essence drops: every hit can give each one (MiningActionComponent).
 const miningConfig = EC['MelvorBase:Mining'] ?? EC.Mining ?? {};
@@ -810,6 +871,34 @@ const hitDamage = (hit) => {
   const share = (who, type) => (hit.Damage ?? []).filter((d) => d.Character === who && local(d.Formula?.Type) === type).reduce((sum, d) => sum + (d.Formula?.Data?.Percent ?? 0), 0);
   return { normal: share('Attacker', 'NormalDamage'), maxHit: share('Attacker', 'MaxHit'), currentHp: share('Defender', 'CurrentHitpoints') };
 };
+// Combat effect stats get their own names (EffectAvoidanceChance, EffectDamageTaken), apart from the
+// character stats of the same name; `effect` is the one effect they're for, if any.
+const COMBAT_EFFECT_STATS = { AvoidanceChance: 'EffectAvoidanceChance', PercentDamageTaken: 'EffectDamageTaken', EffectLifesteal: 'EffectLifesteal' };
+const effectMods = (list) => (list ?? [])
+  .filter((m) => m.Stat?.Name && !m.Condition && !m.Scaling)
+  .map((m) => ({
+    stat: local(m.Stat.StatsType) === 'CombatEffect' ? COMBAT_EFFECT_STATS[m.Stat.Name] ?? m.Stat.Name : m.Stat.Name,
+    value: m.Value ?? 0,
+    ...(m.LocalContext?.Effect ? { effect: local(m.LocalContext.Effect) } : {}),
+    ...(m.LocalContext?.CombatStat ? { combatStat: local(m.LocalContext.CombatStat) } : {}),
+  }));
+// What an attack does besides damage (AttackEffectChance): an effect on its target or itself, rolled
+// before every hit (pre) or on every hit that lands (hit), with the turns or stacks it's set to.
+const EFFECT_KINDS = { DamageOverTime: 'dot', Stun: 'stun', TurnCounting: 'turns', Stacking: 'stacking', EndOfTurnDamage: 'eot' };
+const attackEffect = (when) => (ef) => {
+  const config = ef.Effect?.Data?.Configuration ?? {};
+  return {
+    kind: EFFECT_KINDS[local(ef.Effect?.Type)] ?? local(ef.Effect?.Type),
+    effect: local(ef.Effect?.Data?.Effect ?? ef.Effect?.Type),
+    chance: ef.Chance ?? 1,
+    to: ef.AppliesTo === 'Self' ? 'self' : 'target',
+    when,
+    ...(config.Turns != null ? { turns: config.Turns } : {}),
+    ...(config.StacksToAdd != null ? { stacks: config.StacksToAdd } : {}),
+  };
+};
+// After a stun ends it applies its removal effect (Staggered after a stun, Drowsy after sleep).
+const removalOf = (x) => (x.RemovalEffect?.Data?.Effect ? { after: { effect: local(x.RemovalEffect.Data.Effect), turns: x.RemovalEffect.Data.Configuration?.Turns ?? null } } : {});
 const combat = {
   dungeons,
   styles: Object.fromEntries((O.CombatStyle ?? []).map((st) => {
@@ -866,7 +955,25 @@ const combat = {
     hits: (x.Hits ?? []).map((h) => ({ count: h.Count ?? 1, interval: h.Interval ?? 0, ...hitDamage(h) })),
     avoidable: x.IsAvoidable !== false,
     effects: [...new Set([...(x.PreHitEffects ?? []), ...(x.OnHitEffects ?? [])].map((ef) => humanize(local(ef.Effect?.Data?.Effect ?? ef.Effect?.Type))))],
+    applies: [...(x.PreHitEffects ?? []).map(attackEffect('pre')), ...(x.OnHitEffects ?? []).map(attackEffect('hit'))],
   }])),
+  // Effects attacks apply, by id: damage over time (ActiveDamageOverTimeEffect), stuns (lost turns,
+  // with modifiers while they last), effects that change stats for some of the target's turns, stacks
+  // that build up until the fight ends (ActiveStackingEffect) and damage at the end of each of the
+  // target's turns until then (ActiveEndOfTurnDamageEffect, rolled from its source or its target).
+  effects: Object.fromEntries([
+    ...(O.TurnCountingEffect ?? []).map((x) => [x.Id, { kind: 'turns', name: x.DisplayName, positive: !!x.IsPositive, turns: x.DefaultTurns ?? 1, mods: effectMods(x.Modifiers), ...removalOf(x) }]),
+    ...(O.StunEffect ?? []).map((x) => [x.Id, { kind: 'stun', name: x.DisplayName, turns: x.DefaultTurns ?? 1, mods: effectMods(x.Modifiers), ...removalOf(x) }]),
+    ...(O.DamageOverTimeEffect ?? []).map((x) => {
+      const f = x.DamagePerProc?.Formula ?? {};
+      return [x.Id, { kind: 'dot', name: x.DisplayName, formula: local(f.Type), percent: f.Data?.Percent ?? 0, procs: x.ProcCount ?? 1, interval: x.ProcInterval ?? 1000, maxStacks: x.MaxStacks ?? 1, mods: effectMods(x.Modifiers) }];
+    }),
+    ...(O.StackingEffect ?? []).map((x) => [x.Id, { kind: 'stacking', name: x.DisplayName, maxStacks: x.MaxStacks ?? 1, stacks: x.DefaultStacksToAdd ?? 1, mods: effectMods(x.Modifiers) }]),
+    ...(O.EndOfTurnDamageEffect ?? []).map((x) => {
+      const f = x.DamagePerTurn?.Formula ?? {};
+      return [x.Id, { kind: 'eot', name: x.DisplayName, of: x.DamagePerTurn?.Character === 'Target' ? 'target' : 'source', formula: local(f.Type), percent: f.Data?.Percent ?? 0, damage: f.Data?.Damage ?? 0, mods: [] }];
+    }),
+  ]),
   slots: (O.EquipmentSlot ?? []).map((x) => ({ id: x.Id, name: x.DisplayName, fits: local(x.FitsType), requires: normReqs(x.UnlockRequirements) })),
 };
 
@@ -885,12 +992,12 @@ combat.slayerMasters = (O.SlayerMaster ?? []).filter((m) => !isLocked(m)).map((m
 
 // What an item gives when equipped: its stats plus the unconditional bonuses the companion models.
 // Everything else (conditional or situational bonuses) is kept as text.
-const MODELLED_BONUSES = new Set(['PercentMaxHit', 'FlatMaxHit', 'FlatPowerRating', 'FlatProtectionRating', 'PercentPowerRating', 'PercentProtectionRating', 'PercentAttackInterval', 'FlatAttackInterval', 'PercentAccuracyRating', 'PercentEvasionRating', 'FlatLight', 'MinHitBasedOnMaxHit', 'FlatMinHit', 'FlatCombatStatValue', 'PercentCombatStatValue', 'FlatCriticalHitChance', 'FlatCriticalHitMultiplier', 'PercentDamageDealt']);
+const MODELLED_BONUSES = new Set(['PercentMaxHit', 'FlatMaxHit', 'FlatPowerRating', 'FlatProtectionRating', 'PercentPowerRating', 'PercentProtectionRating', 'PercentAttackInterval', 'FlatAttackInterval', 'PercentAccuracyRating', 'PercentEvasionRating', 'FlatLight', 'MinHitBasedOnMaxHit', 'FlatMinHit', 'FlatCombatStatValue', 'PercentCombatStatValue', 'FlatCriticalHitChance', 'FlatCriticalHitMultiplier', 'PercentDamageDealt', 'PercentAttackReflect', 'DoubleWardDamageChance']);
 // Other stats the combat model uses: hit chance and immunity (TargetCharacterStats), food healing,
 // time between enemies, the chance to keep ammo, runes, prayer points and food, and Slayer coins.
 const MODELLED_OTHER = new Set(['Target.FlatHitChance', 'Target.ImmunityFrom', 'CombatFood.PercentHealing', 'CombatAction.FlatSpawnInterval', 'CombatAction.PercentSpawnInterval',
   'AmmoConsumption.AmmoPreservationChance', 'MagicSpell.RunePreservationChance', 'Prayer.CostPreservationChance', 'CombatFood.FoodPreservationChance',
-  'SlayerTasks.PercentRewardCurrency', 'SlayerTasks.FlatRewardCurrency']);
+  'SlayerTasks.PercentRewardCurrency', 'SlayerTasks.FlatRewardCurrency', 'CombatEffect.AvoidanceChance', 'CombatEffect.PercentDamageTaken', 'CombatEffect.EffectLifesteal']);
 // Effects for the rate calculator, without the ones the combat model already counts as mods.
 const notCombatMod = (e) => e.stats !== 'Character' && !MODELLED_OTHER.has(`${e.stats}.${e.stat}`);
 // Combat bonuses the companion models (Character stats with no condition), and the rest as text.
@@ -917,15 +1024,18 @@ function characterMods(bonuses) {
     // Only the Normal damage type exists and every hit uses it, so bonuses for it always count. Rune
     // preservation can be for one element's spells (kept as `element`).
     const runes = m.Stat?.Name === 'RunePreservationChance';
-    const scoped = ['AttackStance', 'CombatLevel', 'Effect'].some((k) => ctx[k]) || (ctx.Element && !runes) || (ctx.DamageType && local(ctx.DamageType) !== 'Normal');
-    const when = conditionOf(m.Condition);
     const type = local(m.Stat?.StatsType);
+    // Effect avoidance and effect damage taken can be for one effect (kept as `effect`).
+    const forEffect = type === 'CombatEffect';
+    const scoped = ['AttackStance', 'CombatLevel'].some((k) => ctx[k]) || (ctx.Effect && !forEffect) || (ctx.Element && !runes) || (ctx.DamageType && local(ctx.DamageType) !== 'Normal');
+    const when = conditionOf(m.Condition);
     const modelled = type === 'Character' ? MODELLED_BONUSES.has(m.Stat?.Name) : MODELLED_OTHER.has(`${type}.${m.Stat?.Name}`);
     if (modelled && when !== false && !m.Scaling && !scoped) {
       // Some gear works on the enemy (LocalContext Component Enemy): lower enemy accuracy, less ward.
       mods.push({
-        stat: m.Stat.Name,
+        stat: forEffect ? COMBAT_EFFECT_STATS[m.Stat.Name] : m.Stat.Name,
         value: m.Value,
+        ...(forEffect && ctx.Effect ? { effect: local(ctx.Effect) } : {}),
         ...(ctx.CombatStyle ? { style: local(ctx.CombatStyle) } : {}),
         ...(ctx.CombatStat ? { combatStat: local(ctx.CombatStat) } : {}),
         ...(ctx.Element && runes ? { element: local(ctx.Element) } : {}),
@@ -955,7 +1065,26 @@ function toolOf(it) {
     ...(otherBonuses.length ? { otherBonuses } : {}),
     ...(requires.length ? { requires } : {}),
     // Potions, lockpicks, butterflies: a stack goes in the slot and gets used up.
-    ...(tool.ConsumesOn?.length ? { usedUp: true } : {}),
+    // usedOn: what uses one up (ToolbeltCapability.ConsumesOn), e.g. WoodcuttingDamageTree for every hit,
+    // with the trigger's limits: only a recipe, category or thieving type, a success, or a chance.
+    ...(tool.ConsumesOn?.length ? { usedUp: true, usedOn: tool.ConsumesOn.map(usedOn) } : {}),
+  };
+}
+
+function usedOn(c) {
+  const d = c.Data ?? {};
+  return {
+    type: local(c.Type),
+    ...(d.Recipe ? { recipe: local(d.Recipe) } : {}),
+    ...(d.Category ? { category: nameOf(d.Category) } : {}),
+    ...(d.Subcategory ? { subcategory: nameOf(d.Subcategory) } : {}),
+    ...(d.RecipeType ? { recipeType: local(d.RecipeType) } : {}),
+    ...(d.MinRecipeSteps ? { minSteps: d.MinRecipeSteps } : {}),
+    ...(d.SuccessfulActionOnly || d.MustBeSuccessful ? { success: true } : {}),
+    ...(d.FailedActionOnly ? { fail: true } : {}),
+    ...(d.Chance != null ? { chance: d.Chance } : {}),
+    ...(d.Currency ? { currency: local(d.Currency) } : {}),
+    ...(d.Conditions ? { conditions: true } : {}),
   };
 }
 
@@ -978,6 +1107,8 @@ function equipmentOf(it) {
     ...(mods.length ? { mods } : {}),
     ...(otherBonuses.length ? { otherBonuses } : {}),
     ...(w ? { weapon: { type: local(w.Type), elements: (w.Elements ?? []).map(local), ammo: w.RequiredAmmoType ? local(w.RequiredAmmoType) : null } } : {}),
+    // Special attacks it gives while worn, each with its chance per turn (EquipmentComponent.GetAllAttacks).
+    ...(eq.Attacks?.length ? { attacks: eq.Attacks.map((x) => ({ attack: local(x.Attack), chance: x.Chance ?? 0 })) } : {}),
   };
 }
 
@@ -1003,6 +1134,30 @@ combat.sets = (O.EquipmentSetBonus ?? []).filter((x) => !isLocked(x)).map((x) =>
     ...characterMods(b.Modifiers),
     effects: normEffects(b.Modifiers).filter(notCombatMod),
   })),
+}));
+
+// Magic imbuements (MagicSpellsComponent): while you have the runes, each attack turn costs them, and
+// the first hit that lands in a turn may put an effect on the target (OnAttack OnFirstHit).
+const WHEN = { OnFirstHit: 'firstHit', OnHit: 'hit', OnAttack: 'pre' };
+combat.imbuements = (O.Imbuement ?? []).filter((x) => !isLocked(x)).map((x) => ({
+  id: x.Id,
+  name: x.DisplayName,
+  icon: imagePath(x),
+  element: local(x.Element),
+  runes: itemQty(x.RuneCosts),
+  level: levelOf(x.UnlockRequirements, 'Magic'),
+  applies: (x.Bonuses?.CombatEffect ?? []).filter((c) => local(c.Character?.Component) === 'Player').map((c) => {
+    const config = c.Modifier?.Effect?.Data?.Configuration ?? {};
+    return {
+      kind: EFFECT_KINDS[local(c.Modifier?.Effect?.Type)] ?? local(c.Modifier?.Effect?.Type),
+      effect: local(c.Modifier?.Effect?.Data?.Effect),
+      chance: c.Chance ?? 1,
+      to: c.Modifier?.AppliesTo === 'Self' ? 'self' : 'target',
+      when: WHEN[c.Modifier?.Trigger?.Data?.Type] ?? 'firstHit',
+      ...(config.Turns != null ? { turns: config.Turns } : {}),
+      ...(config.StacksToAdd != null ? { stacks: config.StacksToAdd } : {}),
+    };
+  }),
 }));
 
 // Prayers cost points each attack turn: yours (ConsumesOn Player) or the enemy's (Enemy).
@@ -1046,6 +1201,12 @@ function masteryCondition(c) {
   if (type === 'ValueStatistic' && d.Statistic) return { type: 'value', stat: local(d.Statistic), value: d.Value ?? 1 };
   if (type === 'AgilityTechniqueLevel' && d.Technique) return { type: 'technique', technique: local(d.Technique), level: d.Level ?? 1 };
   if (type === 'AgilityNumTechniquesLevel') return { type: 'techniques', count: d.NumTechniques ?? 1, level: d.Level ?? 1 };
+  // Totals the game works out on load: journal levels, rare species and collectables found
+  // (HuntingJournalComponent), and nodes unlocked in one constellation (Major/MinorNodeUnlockCountCondition).
+  if (type === 'HuntingMaxLevelAnimals') return { type: 'journalLevels', level: d.Level ?? 1, count: d.Count ?? 1 };
+  if (type === 'HuntingUniqueRareSpeciesFound') return { type: 'rareSpecies', count: d.Count ?? 1 };
+  if (type === 'HuntingUniqueCollectablesFound') return { type: 'collectables', count: d.Count ?? 1 };
+  if (type === 'AstrologyMajorNodeUnlockCount' || type === 'AstrologyMinorNodeUnlockCount') return { type: 'astrologyNodes', major: type.includes('Major'), constellation: local(d.Constellation), count: d.Count ?? 1 };
   return { type: 'other', kind: type };
 }
 // A task's goal, tied to the methods that progress it where the companion can time them: a recipe,
@@ -1209,6 +1370,43 @@ for (const o of [...(O.SkillNavigationOption ?? []), ...(O.LegacySkillNavigation
 }
 const skills = skillOrder.map((id) => ({ id, name: skillNames.get(id) ?? nameOf(id), combat: COMBAT_SKILLS.has(id), icon: skillIcons.get(id) ?? `res://Assets/Icons/${id}.png` }));
 
+// Item upgrades (ItemUpgradingComponent.ExecuteUpgrade): pay the costs, get `qty` of the upgraded item.
+// The bank's upgrade button stays locked until Requirements are met (SelectItemUpgradeView); every
+// root item is one of the costs, so owning the costs is enough to see it.
+const itemUpgrades = (O.ItemUpgrade ?? []).filter((u) => !isLocked(u)).map((u) => ({
+  id: u.Id,
+  item: full(u.UpgradedItem),
+  qty: u.QuantityPerUpgrade ?? 1,
+  costs: { items: itemQty(u.Costs?.Items), currencies: currencyQty(u.Costs?.Currencies) },
+  requires: normReqs([...(u.Requirements ?? []), ...(u.DisplayRequirements ?? [])]),
+}));
+
+// The Grain Mill (FarmingGrainMillComponent): while switched on it pays one recipe's ingredients from
+// its own storage every 300 s (_baseGrainMillInterval) and puts the product in the bank. Storage holds
+// up to 6,000 of each item (GrainMillInventoryComponent.BaseMaxStackQuantity) plus storage upgrades.
+const millData = (O.GrainMill ?? [])[0];
+const grainMill = millData ? {
+  name: millData.DisplayName,
+  icon: imagePath(millData),
+  requires: normReqs(millData.Requirements),
+  storageItems: (millData.StorageItems ?? []).map(full),
+  baseIntervalMs: 300_000,
+  baseStorage: 6000,
+  recipes: (O.GrainMillRecipe ?? []).filter((r) => !isLocked(r)).map((r) => ({
+    id: r.Id,
+    name: typeof r.DisplayName === 'string' ? r.DisplayName : nameOf(r.Id),
+    icon: imagePath(r),
+    product: { item: full(r.Product?.Item), qty: qty(r.Product) },
+    ingredients: itemQty(r.Ingredients?.Items),
+    xp: r.BaseExperience ?? 0,
+    requires: normReqs([...(r.Requirements ?? []), ...(r.DisplayRequirements ?? [])]),
+  })),
+} : null;
+
+// Which animals each enclosure takes, in the game's order: breeding checks them in this order and
+// stops at the first that can't breed (ActiveRanchingEnclosure.AttemptToBreed).
+for (const e of O.RanchingEnclosure ?? []) if (ranchingEnclosures[local(e.Id)]) ranchingEnclosures[local(e.Id)].animals = (e.Animals ?? []).map(local);
+
 // Only keep items that some included piece of content references.
 const CAPABILITY_TAGS = {
   Equipment: 'equipment', Weapon: 'weapon', Toolbelt: 'tool', Food: 'food', Openable: 'openable',
@@ -1217,6 +1415,7 @@ const CAPABILITY_TAGS = {
 // Demo builds keep only items that included content references (no spoilers); full builds keep every item.
 const filterItems = !includeLocked && lockedObjects > 50;
 const referenced = new Set(findItemRefs({ methods, enemies, shop }));
+for (const id of findItemRefs({ itemUpgrades, grainMill })) referenced.add(id);
 const items = {};
 for (const it of O.Item ?? []) {
   const id = full(it.Id);
@@ -1245,6 +1444,20 @@ for (const it of O.Item ?? []) {
   if (equip) items[id].equip = equip;
   const tool = toolOf(it);
   if (tool) items[id].tool = tool;
+  // A food's bonus only counts while it's the food selected in one entity's food slot (Thieving for
+  // sushi's stealth, Combat for power or protection), and you have some (FoodComponent.LoadBonuses).
+  // Fishing bait: its bonus while it's the bait selected and you have some; one is used per catch
+  // (FishingBaitComponent). Compost: a plot's bonus for one planting, one used when applied.
+  const capOf = (name) => (!Array.isArray(it.Capabilities) ? it.Capabilities?.[Object.keys(it.Capabilities ?? {}).find((k) => local(k) === name)] : null);
+  const baitCap = capOf('FishingBait');
+  if (baitCap) items[id].bait = { effects: normEffects(baitCap.Bonuses) };
+  const compostCap = capOf('Compost');
+  if (compostCap) items[id].compost = { effects: normEffects({ Component: compostCap.CompostModifierTemplate }) };
+  const foodBonuses = foodKey ? it.Capabilities[foodKey]?.Bonuses : null;
+  if (foodBonuses?.Component?.Entity) {
+    const effects = normEffects(foodBonuses.Modifiers);
+    if (effects.length) items[id].foodBonus = { entity: local(foodBonuses.Component.Entity), effects };
+  }
   // Chests and other openables: what's always inside, and the table one roll picks from.
   const openKey = !Array.isArray(it.Capabilities) && Object.keys(it.Capabilities ?? {}).find((k) => local(k) === 'Openable');
   if (openKey) items[id].opens = { always: table(it.Capabilities[openKey].AlwaysDrops), table: table(it.Capabilities[openKey].DropTable) };
@@ -1307,7 +1520,15 @@ const data = {
   thievingBonuses,
   huntingJournalBonuses,
   astrology,
+  bonfires,
+  auroras,
+  astrologyEvents,
+  huntingCollectables,
+  ranchingVariants: ranchingVariantBonuses,
+  ranchingEnclosures,
   mining,
+  itemUpgrades,
+  grainMill,
 };
 
 mkdirSync(dirname(outPath), { recursive: true });

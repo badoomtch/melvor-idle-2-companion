@@ -1,6 +1,8 @@
 // Completion log progress and the quickest way to fill each gap. Isomorphic.
 import { obtain, producerIndex } from './advisor.js';
 import { purchaseStatus } from './gamedata.js';
+import { millRecipeRates } from './grain-mill.js';
+import { upgradeNeeds } from './item-upgrades.js';
 import { itemDetails, triesFor } from './lookup.js';
 import { computeRates } from './rates.js';
 
@@ -57,6 +59,29 @@ export function quickestSource(gd, itemId, { levels, bestFights = null, wallet =
       const affordable = !wallet || (p.costs.currencies.every((c) => (wallet[c.currency] ?? 0) >= c.qty) && p.costs.items.every((i) => (stock?.[i.item] ?? 0) >= i.qty));
       if (blocked || !affordable) blockers.push({ type: 'shop', purchase: p, affordable });
       else consider({ type: 'shop', purchase: p, hours: 0 });
+    } else if (source.type === 'upgrade') {
+      // Instant once you hold the costs: the time is gathering or making what you're short of.
+      const u = upgradeNeeds(gd, source.upgrade, { levels, stock: have, wallet, index: have ? (index ??= producerIndex(gd, levels)) : null });
+      if (!u.ok || u.cantGather.length || u.currency.some((c) => c.short > 0)) blockers.push({ type: 'upgrade', upgrade: source.upgrade, missing: u.missing, materials: u.cantGather, currency: u.currency.filter((c) => c.short > 0) });
+      else consider({ type: 'upgrade', upgrade: source.upgrade, hours: u.hours, gatherHours: u.hours, gather: u.gather });
+    } else if (source.type === 'mill') {
+      // One Grain Mill batch, after gathering its crops. The mill itself and the recipe's hopper are
+      // shop purchases, so they're in the recipe's requirements.
+      const r = source.recipe;
+      const req = gd.checkRequirements({ skill: null, level: 0, requires: [...(gd.raw.grainMill.requires ?? []), ...r.requires] }, levels);
+      if (!usable(req)) {
+        blockers.push({ type: 'mill', recipe: r, missing: req.missing });
+        continue;
+      }
+      const rates = millRecipeRates(gd, r);
+      const materials = have ? rates.ingredients.map((i) => obtain(index ??= producerIndex(gd, levels), have, i.item, i.qty)) : [];
+      const gather = materials.filter((x) => x.short > 0).map((x) => ({ ...x, qty: x.short }));
+      if (gather.some((x) => !x.method)) {
+        blockers.push({ type: 'mill', recipe: r, missing: [], materials: gather.filter((x) => !x.method).map((x) => x.item) });
+        continue;
+      }
+      const gatherHours = gather.reduce((s, x) => s + x.hours, 0);
+      consider({ type: 'mill', recipe: r, hours: rates.intervalMs / 3_600_000 + gatherHours, gatherHours, gather, rates });
     }
   }
   return { best, blockers };

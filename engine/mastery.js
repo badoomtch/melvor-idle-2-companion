@@ -30,10 +30,27 @@ export function conditionMet(gd, condition, { save, levels }) {
       const byId = save?.statistics?.[condition.stat];
       return byId && typeof byId === 'object' ? statValue(save.statistics, condition.stat, condition.id) >= condition.value : null;
     }
-    case 'value':
-      // ValueStatisticCondition. Only simple statistics are saved; totals the game works out when
-      // loading (Astrology nodes unlocked) aren't, so those stay unknown.
+    case 'value': {
+      // ValueStatisticCondition. Simple statistics are saved; the Astrology node totals are worked out
+      // when the game loads, so they're counted from the nodes in the save.
+      const nodes = { AstrologyTotalMajorNodesUnlocked: 'major', AstrologyTotalMinorNodesUnlocked: 'minor' }[condition.stat];
+      if (nodes) return save?.astrology ? Object.values(save.astrology).reduce((s, c) => s + c[nodes].length, 0) >= condition.value : null;
       return typeof save?.statistics?.[condition.stat] === 'number' ? save.statistics[condition.stat] >= condition.value : null;
+    }
+    case 'astrologyNodes': {
+      const c = save?.astrology ? save.astrology[condition.constellation] : undefined;
+      return save?.astrology ? (c?.[condition.major ? 'major' : 'minor'].length ?? 0) >= condition.count : null;
+    }
+    case 'journalLevels':
+      return save?.huntingJournal ? Object.values(save.huntingJournal).filter((j) => j.level >= condition.level).length >= condition.count : null;
+    case 'rareSpecies': {
+      const byId = save?.statistics?.HuntingAnimalSpeciesTrapped;
+      return byId && typeof byId === 'object' ? Object.values(byId).filter((n) => n >= 1).length >= condition.count : null;
+    }
+    case 'collectables': {
+      const found = save?.statistics?.BankItemFound;
+      return found && typeof found === 'object' ? (gd.raw.huntingCollectables ?? []).filter((item) => statValue(save.statistics, 'BankItemFound', item) >= 1).length >= condition.count : null;
+    }
     case 'technique':
       return save?.agilityTechniques ? (save.agilityTechniques[condition.technique]?.level ?? 1) >= condition.level : null;
     case 'techniques':

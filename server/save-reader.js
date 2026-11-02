@@ -394,7 +394,43 @@ function readAstrologyAction(region) {
     if (!Number.isFinite(knowledge) || knowledge < 0) throw new SaveFormatError(`Implausible knowledge for ${id}`);
     out[id] = { knowledge, minor, major };
   }
-  return out;
+  // Then the constellation selected and the one being studied, then the bonus event Astrology turned up
+  // (Blue Moon, Blood Moon, Aurora): whether it's been switched on and its charges left (ActiveBonusesEvent).
+  let event = null;
+  if (r.bool()) r.str();
+  if (r.bool()) r.str();
+  if (r.bool()) {
+    const id = localId(r.str());
+    const e = r.region();
+    event = { event: id, activated: e.bool(), charges: e.i32() };
+  }
+  return { constellations: out, event };
+}
+
+// FiremakingBonfireComponent.WriteTo: its duration timer (max ticks, ticks left, paused), then the
+// bonfire lit, then whether it's on.
+function readBonfire(region) {
+  const r = region;
+  const maxTicks = r.i32();
+  const ticksLeft = r.i32();
+  const paused = r.bool();
+  const bonfire = r.bool() ? localId(r.str()) : null;
+  const active = r.bool();
+  return { bonfire, active, paused, ticksLeft, maxTicks };
+}
+
+// RareEventsComponent.WriteTo: its timer (flag + 3 ints), then the bonus event in progress, if any:
+// whether it's been switched on and its charges left.
+function readRareEvent(region) {
+  const r = region;
+  r.bool();
+  r.i32();
+  r.i32();
+  r.i32();
+  if (!r.bool()) return null;
+  const event = localId(r.str());
+  const e = r.region();
+  return { event, activated: e.bool(), charges: e.i32() };
 }
 
 // HuntingJournalComponent.WriteTo: each animal's id, then in a region whether it's discovered and its
@@ -410,7 +446,8 @@ function readHuntingJournal(region, version) {
     if (version < SaveVersion.Alpha0_11_1) e.i32();
     const level = e.i32();
     if (!Number.isFinite(xp) || xp < 0 || level < 1 || level > 1000) throw new SaveFormatError(`Implausible journal entry for ${id}`);
-    if (discovered) out[id] = { level, xp };
+    // Every animal starts discovered; an undiscovered one tracks 4 times its most steps (ActiveHuntingAnimal).
+    out[id] = discovered ? { level, xp } : { level, xp, discovered: false };
   }
   return out;
 }
@@ -494,6 +531,215 @@ function readShop(region) {
   return purchased;
 }
 
+// Game ticks: Constants.TickInterval = 1000 / Engine.PhysicsTicksPerSecond, which project.godot leaves at
+// Godot's default of 60 (a 4-hour crop waits 864,000 ticks).
+export const TICK_MS = 1000 / 60;
+// SaveVersion values the farming and ranching layouts change at.
+const PassiveVersion = { Alpha0_7_4: 11, Alpha0_7_5: 12, Alpha0_8_2: 14, Alpha0_9_5: 20, Alpha0_10_0: 21 };
+const TIMER_STATES = ['stopped', 'paused', 'running'];
+
+// TickTimer.WriteTo: bool auto-restart, int32 state, int32 wait ticks, int32 ticks left. Also the layout
+// QueuedTimers had before Alpha0_10_0 (QueuedTimer.ReadFromTickTimer).
+function readTickTimer(r) {
+  r.bool();
+  const state = TIMER_STATES[r.i32()];
+  const waitTicks = r.i32();
+  const ticksLeft = r.i32();
+  if (!state || waitTicks < 0) throw new SaveFormatError(`Implausible timer (state ${state}, wait ${waitTicks})`);
+  return { state, msLeft: state === 'stopped' ? null : Math.max(0, ticksLeft) * TICK_MS, waitMs: waitTicks * TICK_MS };
+}
+
+// QueuedTimer.WriteTo: bool auto-restart, int32 state, int32 wait ticks, int64 scheduled tick, int32 paused
+// ticks left. A running timer's time left is its scheduled tick minus its queue's current tick.
+function readQueuedTimer(r, version, queueTick) {
+  if (version < PassiveVersion.Alpha0_10_0) return readTickTimer(r);
+  r.bool();
+  const state = TIMER_STATES[r.i32()];
+  const waitTicks = r.i32();
+  const scheduled = Number(r.i64());
+  const paused = r.i32();
+  if (!state || waitTicks < 0) throw new SaveFormatError(`Implausible timer (state ${state}, wait ${waitTicks})`);
+  const ticksLeft = state === 'running' ? scheduled - queueTick : state === 'paused' ? paused : null;
+  return { state, msLeft: ticksLeft == null ? null : Math.max(0, ticksLeft) * TICK_MS, waitMs: waitTicks * TICK_MS };
+}
+
+// TimerQueue.WriteTo: the int64 tick it has counted to (absent before Alpha0_10_0).
+function readQueueTick(r, version) {
+  if (version < PassiveVersion.Alpha0_10_0) return 0;
+  const tick = Number(r.i64());
+  if (tick < 0) throw new SaveFormatError(`Implausible timer queue tick ${tick}`);
+  return tick;
+}
+
+// FarmingPassiveComponent.WriteTo: [bool, selected category], the plot timer queue, then each plot's id and
+// region. ActiveFarmingPlot.WriteTo: bool watered, auto plant, auto harvest, auto compost, auto water,
+// [bool, selected recipe], [bool, selected compost], [bool, compost in the soil], int32 state, then the
+// state's own fields (PlotState.DataSerializer): growing and providing a bonus = recipe + timer, grown =
+// recipe + int32 qty + item + int32 regrows left, regrowing = recipe + timer + int32 regrows left.
+const PLOT_STATES = ['locked', 'empty', 'growing', 'grown', 'regrowing', 'bonus'];
+function readFarmingPlots(region, version) {
+  const r = region;
+  const category = optionalId(r);
+  const tick = readQueueTick(r, version);
+  const plots = [];
+  for (let i = 0, n = r.count(1000, 'farming plot'); i < n; i++) {
+    const id = localId(r.str());
+    const p = r.region();
+    const plot = { id, watered: p.bool(), auto: { plant: p.bool(), harvest: p.bool(), compost: p.bool(), water: p.bool() } };
+    const selected = optionalId(p);
+    const selectedCompost = optionalId(p);
+    const compost = optionalId(p);
+    plot.selected = selected && localId(selected);
+    plot.selectedCompost = selectedCompost && localId(selectedCompost);
+    plot.compost = compost && localId(compost);
+    plot.state = PLOT_STATES[p.i32()];
+    if (!plot.state) throw new SaveFormatError(`Unknown state for farming plot ${id}`);
+    if (plot.state !== 'locked' && plot.state !== 'empty') plot.recipe = localId(p.str());
+    if (plot.state === 'growing' || plot.state === 'regrowing' || plot.state === 'bonus') plot.timer = readQueuedTimer(p, version, tick);
+    if (plot.state === 'grown') {
+      const qty = p.i32();
+      plot.product = { item: p.str(), qty };
+    }
+    if (plot.state === 'grown' || plot.state === 'regrowing') plot.regrowsRemaining = p.i32();
+    done(p, `Farming plot ${id}`);
+    plots.push(plot);
+  }
+  done(r, 'Farming plots');
+  return { category: category && localId(category), tick, plots };
+}
+
+// ActiveRanchingAnimal.WriteTo: bool sick, double hunger, safety, satisfaction, bool wants pets, int32 times
+// petted, variant id, the treats it was given (bool + item each), then double minutes of life left, minutes
+// until it grows up (the base variant) and minutes until it wants petting. Before Alpha0_8_2 the three
+// were TickTimers before the variant; the game turns them into minutes the same way.
+function readRanchingAnimal(r, version, species) {
+  const a = { species, sick: r.bool(), hunger: r.f64(), safety: r.f64(), satisfaction: r.f64(), wantsPets: r.bool(), petCount: r.i32() };
+  let old = null;
+  if (version < PassiveVersion.Alpha0_8_2) {
+    const minutes = (t) => Math.ceil(((t.msLeft ?? 0) / 60_000));
+    const [life, pet, variant] = [readTickTimer(r), readTickTimer(r), readTickTimer(r)];
+    old = { lifespanMinutes: minutes(life), petMinutes: minutes(pet), variantMinutes: minutes(variant) };
+  }
+  a.variant = localId(r.str());
+  a.treats = {};
+  for (let i = 0, n = r.count(100, 'animal treat'); i < n; i++) {
+    const given = r.bool();
+    a.treats[localId(r.str())] = given;
+  }
+  if (old) Object.assign(a, old);
+  else Object.assign(a, { lifespanMinutes: r.f64(), variantMinutes: r.f64(), petMinutes: r.f64() });
+  for (const k of ['hunger', 'safety', 'satisfaction', 'lifespanMinutes', 'variantMinutes', 'petMinutes']) {
+    if (!Number.isFinite(a[k])) throw new SaveFormatError(`Implausible ${k} for a ${species}`);
+  }
+  // ActiveRanchingAnimal.ReadFrom clamps these.
+  a.hunger = Math.max(0, a.hunger);
+  a.safety = Math.max(0, a.safety);
+  return a;
+}
+
+// ActiveRanchingEnclosure.WriteTo: breed timer, double maintenance, each animal's species and region, the
+// species set to auto-buy, the once-a-minute timer that ages the animals, and the upgrades bought.
+function readRanchingEnclosure(r, version, tick) {
+  readQueuedTimer(r, version, tick);
+  const e = { maintenance: r.f64(), animals: [], autoBuy: [], upgrades: [], minuteTimerMs: null };
+  if (!Number.isFinite(e.maintenance)) throw new SaveFormatError('Implausible enclosure maintenance');
+  for (let i = 0, n = r.count(10_000, 'ranching animal'); i < n; i++) {
+    const species = localId(r.str());
+    const g = r.region();
+    e.animals.push(readRanchingAnimal(g, version, species));
+    done(g, `Ranching animal ${species}`);
+  }
+  for (let i = 0, n = r.count(1000, 'auto-buy animal'); i < n; i++) e.autoBuy.push(localId(r.str()));
+  if (version >= PassiveVersion.Alpha0_8_2) e.minuteTimerMs = readQueuedTimer(r, version, tick).msLeft;
+  if (version >= PassiveVersion.Alpha0_9_5) for (let i = 0, n = r.count(1000, 'enclosure upgrade'); i < n; i++) e.upgrades.push(localId(r.str()));
+  return e;
+}
+
+// RanchingPassiveComponent.WriteTo: the maintenance, food, product and treat timers (TickTimers), nine
+// tutorial flags, the land timer queue, each land's id and region (ActiveRanchingLand: bool bought, [bool,
+// enclosure id, enclosure region]), how many of each variant you've seen, treats switched off, land order.
+function readRanching(region, version) {
+  const r = region;
+  const timers = { maintenance: readTickTimer(r), food: readTickTimer(r), product: readTickTimer(r), treat: readTickTimer(r) };
+  for (let i = 0; i < 9; i++) r.bool();
+  const tick = readQueueTick(r, version);
+  const land = [];
+  for (let i = 0, n = r.count(1000, 'ranching land'); i < n; i++) {
+    const id = localId(r.str());
+    const g = r.region();
+    const l = { id, purchased: g.bool(), enclosure: null };
+    if (g.bool()) {
+      const enclosure = localId(g.str());
+      const e = g.region();
+      l.enclosure = { id: enclosure, ...readRanchingEnclosure(e, version, tick) };
+      done(e, `Enclosure on ${id}`);
+    }
+    done(g, `Ranching land ${id}`);
+    land.push(l);
+  }
+  const variantsSeen = {};
+  for (let i = 0, n = r.count(10_000, 'animal variant'); i < n; i++) {
+    const count = r.i32();
+    variantsSeen[localId(r.str())] = count;
+  }
+  const blockedTreats = [];
+  if (version >= PassiveVersion.Alpha0_7_4) for (let i = 0, n = r.count(1000, 'treat'); i < n; i++) blockedTreats.push(localId(r.str()));
+  const landOrder = [];
+  if (version >= PassiveVersion.Alpha0_7_5) for (let i = 0, n = r.count(1000, 'land order'); i < n; i++) landOrder.push(localId(r.str()));
+  done(r, 'Ranching');
+  return { timers: Object.fromEntries(Object.entries(timers).map(([k, t]) => [k, t.msLeft])), land, variantsSeen, blockedTreats, landOrder };
+}
+
+// The Farming entity's Grain Mill. FarmingGrainMillComponent.WriteTo: bool switched on, its batch timer
+// (TickTimer), [bool, selected recipe], [bool, int32 qty, item ready to collect]. GrainMillInventory is the
+// mill's storage, a StackableInventory: int32 max stacks, min and max stack quantity, bool stack combining,
+// bool same-item stacks, then each stack's int32 qty, bool placeholder, [bool locked], item.
+function readGrainMill(mill, inventory, version) {
+  const r = mill;
+  const active = r.bool();
+  const timer = readTickTimer(r);
+  const recipe = optionalId(r);
+  let ready = null;
+  if (r.bool()) {
+    const qty = r.i32();
+    ready = { item: r.str(), qty };
+  }
+  done(r, 'Grain Mill');
+  const storage = {};
+  if (inventory) {
+    const s = inventory;
+    s.i32();
+    s.i32();
+    s.i32();
+    s.bool();
+    s.bool();
+    for (let i = 0, n = s.count(1000, 'grain mill stack'); i < n; i++) {
+      const qty = s.i32();
+      s.bool();
+      if (version >= SaveVersion.Alpha0_4_4) s.bool();
+      const id = s.str();
+      if (qty < 0) throw new SaveFormatError(`Implausible grain mill stack "${id}" x${qty}`);
+      storage[id] = (storage[id] ?? 0) + qty;
+    }
+    done(s, 'Grain Mill storage');
+  }
+  return { active, timer, recipe: recipe && localId(recipe), ready, storage };
+}
+
+// CurrencyWalletComponent.WriteTo (Bank entity): each currency's amount, then its id. Prayer points
+// live here.
+function readWallet(region) {
+  const r = region;
+  const out = {};
+  const n = r.count(100, 'currency');
+  for (let i = 0; i < n; i++) {
+    const qty = Number(r.i64());
+    out[localId(r.str())] = qty;
+  }
+  done(r, 'currencies');
+  return out;
+}
+
 // Gear, stances, food, spell and loadouts from the Combat entity; skill toolbelts from every entity.
 function readCombat(components, version) {
   const combat = {};
@@ -512,7 +758,12 @@ function readCombat(components, version) {
   }
   if (components.has('Player')) combat.stances = readStances(components.get('Player'), version);
   if (components.has('Food')) combat.food = optionalId(components.get('Food'));
-  if (components.has('MagicSpells')) combat.spell = optionalId(components.get('MagicSpells'));
+  // MagicSpellsComponent.WriteTo: the selected spell, then the selected imbuement.
+  if (components.has('MagicSpells')) {
+    const r = components.get('MagicSpells');
+    combat.spell = optionalId(r);
+    combat.imbuement = optionalId(r);
+  }
   return combat;
 }
 
@@ -573,6 +824,16 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
         result.warnings.push(`${id} toolbelt: ${e.message}`);
       }
     }
+    // Every entity with a food slot has its own selected food (FoodComponent.WriteTo starts with it);
+    // read from a fresh copy so the Combat reader below still starts at the beginning.
+    if (components.has('Food')) {
+      try {
+        const food = optionalId(new Reader(components.get('Food').buf));
+        if (food) (result.foods ??= {})[id] = food;
+      } catch (e) {
+        result.warnings.push(`${id} food: ${e.message}`);
+      }
+    }
     if (components.has('Pets')) {
       try {
         result.pets = [...(result.pets ?? []), ...readPets(components.get('Pets'))];
@@ -603,9 +864,34 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
     }
     if (id === 'Astrology' && components.has('Action')) {
       try {
-        result.astrology = readAstrologyAction(components.get('Action'));
+        const astrology = readAstrologyAction(components.get('Action'));
+        result.astrology = astrology.constellations;
+        if (astrology.event) result.astrologyEvent = astrology.event;
       } catch (e) {
         result.warnings.push(`Astrology nodes: ${e.message}`);
+      }
+    }
+    // FishingBaitComponent.WriteTo: the bait selected, if any.
+    if (id === 'Fishing' && components.has('BaitComponent')) {
+      try {
+        result.fishingBait = optionalId(components.get('BaitComponent'));
+      } catch (e) {
+        result.warnings.push(`Fishing bait: ${e.message}`);
+      }
+    }
+    if (id === 'Firemaking' && components.has('Bonfire')) {
+      try {
+        result.bonfire = readBonfire(components.get('Bonfire'));
+      } catch (e) {
+        result.warnings.push(`Bonfire: ${e.message}`);
+      }
+    }
+    if (components.has('RareEvents')) {
+      try {
+        const aurora = readRareEvent(components.get('RareEvents'));
+        if (aurora) (result.auroras ??= {})[id] = aurora;
+      } catch (e) {
+        result.warnings.push(`${id} rare events: ${e.message}`);
       }
     }
     if (id === 'Hunting' && components.has('Journal')) {
@@ -657,6 +943,27 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
         result.warnings.push(`Shop purchases: ${e.message}`);
       }
     }
+    if (id === 'Farming' && components.has('Passive')) {
+      try {
+        result.farming = readFarmingPlots(components.get('Passive'), version);
+      } catch (e) {
+        result.warnings.push(`Farming plots: ${e.message}`);
+      }
+    }
+    if (id === 'Farming' && components.has('GrainMill')) {
+      try {
+        result.grainMill = readGrainMill(components.get('GrainMill'), components.get('GrainMillInventory') ?? null, version);
+      } catch (e) {
+        result.warnings.push(`Grain Mill: ${e.message}`);
+      }
+    }
+    if (id === 'Ranching' && components.has('Passive')) {
+      try {
+        result.ranching = readRanching(components.get('Passive'), version);
+      } catch (e) {
+        result.warnings.push(`Ranching: ${e.message}`);
+      }
+    }
     if (id === 'Slayer' && components.has('Tasks')) {
       try {
         result.slayer = readSlayerTasks(components.get('Tasks'));
@@ -669,6 +976,13 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
         result.combat = readCombat(components, version);
       } catch (e) {
         result.warnings.push(`Combat gear: ${e.message}`);
+      }
+    }
+    if (id === 'Bank' && components.has('Wallet')) {
+      try {
+        result.wallet = readWallet(components.get('Wallet'));
+      } catch (e) {
+        result.warnings.push(`Wallet: ${e.message}`);
       }
     }
     if (id === 'Bank' && components.has('Inventory')) {

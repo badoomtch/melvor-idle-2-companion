@@ -75,7 +75,7 @@ const CRAFTING_KINDS = new Set(['artisan', 'cooking', 'firemaking']);
 
 // Each change of what you're doing costs a little in a plan, so it doesn't hop to another method (or off
 // to gather something) for a fraction of a level when carrying on is nearly as quick.
-export const SWITCH_HOURS = 2 / 60;
+export const SWITCH_HOURS = 5 / 60;
 
 // Methods an earlier plan chose (`prefer`) count as this much quicker, so a plan only changes its mind
 // when something else is clearly better, not on every small change in your bank.

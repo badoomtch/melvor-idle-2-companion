@@ -27,14 +27,22 @@ export function createObservationStore(dir) {
   /**
    * Adds the gains between two saves of the same action.
    * @param xp { skill: gained } and items { item: change } over `seconds`
+   * @param timed { seconds, xp, est }: the XP gained in the action's skill and what was predicted for
+   *   the same stretch at the time, when the companion could predict it
    */
-  async function add(id, activity, seconds, xp, items) {
+  async function add(id, activity, seconds, xp, items, timed = null) {
     const entry = await load(id);
     const a = (entry.actions[activity] ??= { seconds: 0, xp: {}, items: {}, firstSeen: Date.now(), lastSeen: 0 });
     a.seconds += seconds;
     a.lastSeen = Date.now();
     for (const [k, v] of Object.entries(xp)) if (v) a.xp[k] = (a.xp[k] ?? 0) + v;
     for (const [k, v] of Object.entries(items)) if (v) a.items[k] = (a.items[k] ?? 0) + v;
+    if (timed) {
+      a.timed ??= { seconds: 0, xp: 0, est: 0 };
+      a.timed.seconds += timed.seconds;
+      a.timed.xp += timed.xp;
+      a.timed.est += timed.est;
+    }
     entry.dirty = true;
     if (Date.now() - entry.savedAt > SAVE_EVERY_MS) await flush(id);
   }

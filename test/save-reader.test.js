@@ -265,6 +265,19 @@ test('reads each Hunting animal journal level', () => {
     c.i32(0).i32(0);
   };
   const save = parseSave(buildSave({ skills: { Mining: lvl(10) }, extraEntities: [['MelvorBase:Hunting', [['Journal', journal]]]] }));
-  assert.deepEqual(save.huntingJournal, { WildChicken: { level: 6, xp: 183 } }, 'undiscovered animals are left out');
+  assert.deepEqual(save.huntingJournal, { WildChicken: { level: 6, xp: 183 }, Griffin: { level: 1, xp: 0, discovered: false } }, 'undiscovered animals are marked');
+  assert.deepEqual(save.warnings, []);
+});
+
+test('reads the bonfire and each skill Aurora', () => {
+  const bonfire = (c) => c.i32(1_728_000).i32(216_000).bool(false).bool(true).str('MelvorBase:Willow').bool(true);
+  const aurora = (c) => c.bool(true).i32(0).i32(3600).i32(1200).bool(true).str('MelvorBase:WoodcuttingAurora').region((e) => e.bool(true).i32(42));
+  const quiet = (c) => c.bool(true).i32(0).i32(3600).i32(1200).bool(false);
+  const save = parseSave(buildSave({
+    skills: { Mining: lvl(10) },
+    extraEntities: [['MelvorBase:Firemaking', [['Bonfire', bonfire]]], ['MelvorBase:Woodcutting', [['RareEvents', aurora]]], ['MelvorBase:Fishing', [['RareEvents', quiet]]]],
+  }));
+  assert.deepEqual(save.bonfire, { bonfire: 'Willow', active: true, paused: false, ticksLeft: 216_000, maxTicks: 1_728_000 });
+  assert.deepEqual(save.auroras, { Woodcutting: { event: 'WoodcuttingAurora', activated: true, charges: 42 } });
   assert.deepEqual(save.warnings, []);
 });

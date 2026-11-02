@@ -15,6 +15,7 @@ import { planRoute } from '../engine/route.js';
 // A plan that's stuck or finished is planned again at most this often, so a plan that can't start
 // doesn't send a new notification with every autosave.
 const REPLAN_MS = 60_000;
+const SHORT_REPLAN_MS = 10 * 60_000;
 
 /**
  * @param actions (id) => what each action has really given you so far (the observation store's record),
@@ -76,6 +77,7 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
     const flat = progress.legs.flatMap((l) => l.steps);
     const next = progress.step ? `Next: ${describeStep(gd, progress.step)}` : '';
     if (why?.ranOut) out.push({ title: `Out of ${gd.itemName(why.ranOut)}: new plan`, body: next });
+    else if (why?.short) out.push({ title: `Not enough ${gd.itemName(why.short)} any more: new plan`, body: next });
     else if (why?.done) out.push({ title: 'Plan finished: here’s the next one', body: next });
     // Said once per plan: the bank won't hold what it brings in.
     if (progress.space && !warned.has(progress.madeAt)) {
@@ -113,8 +115,12 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
     let why = null;
     let fresh = false;
     const due = !locked || now() - (locked.madeAt ?? 0) > REPLAN_MS;
-    if (!locked || progress.broken || (due && (progress.finished || progress.blocked))) {
-      why = !locked || progress.broken ? null : progress.finished ? { done: true } : { ranOut: progress.blocked };
+    // A shortfall something you can do now makes up gets a top-up step in the same plan (routeProgress).
+    // One nothing can make up means a new plan from the bank as it is now, unless this plan was only just
+    // made for that same shortage (the planner had no better way, so don't keep churning).
+    const short = progress?.short && !(locked?.why?.short === progress.short.item && now() - (locked.madeAt ?? 0) < SHORT_REPLAN_MS) ? progress.short : null;
+    if (!locked || progress.broken || (due && (progress.finished || progress.blocked || short))) {
+      why = !locked || progress.broken ? null : progress.finished ? { done: true } : progress.blocked ? { ranOut: progress.blocked } : { short: short.item, need: short.need, have: short.have };
       locked = make(id, save, why, locked?.decisions);
       progress = routeProgress(gd, locked, input);
       fresh = true;

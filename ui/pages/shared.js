@@ -91,6 +91,7 @@ export function methodDetail(ctx, x) {
   ];
   const costs = [
     ...r.inputs.map((i) => `<li>${itemLink(ctx, i.item)} × ${num(i.perHour)} <span class="muted">(${gp(i.value)} GP)</span></li>`),
+    ...(r.toolUse ?? []).map((t) => `<li>${itemLink(ctx, t.item)} × ${num(t.perHour)} <span class="muted">(${gp(t.value)} GP, from your toolbelt)</span></li>`),
     ...Object.entries(r.currencies).filter(([, n]) => n < 0).map(([c, n]) => `<li>${num(-n)} ${esc(gd.currencyName(c))}</li>`),
     ...(r.food ? [`<li>${itemLink(ctx, r.food.item)} × ${num(r.food.perHour)} <span class="muted">(${gp(r.food.value)} GP) to heal ${num(r.hpLossPerHour)} HP</span></li>`] : []),
   ];

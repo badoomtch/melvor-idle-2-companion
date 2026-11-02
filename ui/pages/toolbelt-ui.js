@@ -1,5 +1,5 @@
 // The Toolbelts page: items in your bank worth putting on, and what's in each toolbelt now.
-import { slotStatus, toolbeltAdvice } from '/engine/toolbelt-advice.js';
+import { foodAdvice, slotStatus, toolbeltAdvice } from '/engine/toolbelt-advice.js';
 import { badge, esc, exact, gp, iconImg, pct } from '/ui/format.js';
 import { combatRecommendation, combatSetup } from './combat.js';
 import { bonusText, card, itemLink, memo, methodLink, pageHead, saveKey, skillName } from './shared.js';
@@ -122,5 +122,18 @@ export function toolbeltPage(ctx) {
   const later = advice.later.length
     ? card(`For later <span class="muted small">· ${exact(advice.later.length)}</span>`, `<p class="small muted">Items you own for slots that aren't open yet, or that need a level first.</p><ul class="list-plain">${advice.later.map((l) => laterLine(ctx, l)).join('')}</ul>`, ' style="margin-top:12px"')
     : '';
-  return `${head}${swaps}${later}${nowCard(ctx)}`;
+  return `${head}${swaps}${foodCard(ctx)}${later}${nowCard(ctx)}`;
+}
+
+// Food with a bonus for a skill (sushi's stealth for Thieving), selected in that skill's own food slot.
+function foodCard(ctx) {
+  const advice = memo('toolbelt:food', saveKey(ctx), () => foodAdvice(ctx.gd, ctx.save, { levels: ctx.levels, current: currentMethodKey(ctx) }));
+  if (!advice.length) return '';
+  const rows = advice.map((f) => {
+    const bonus = esc(ctx.gd.items[f.item].foodBonus.effects.map(bonusText).join(', '));
+    return `<li class="belt-skill"><span>${skillBadge(ctx, f.skill)} <a href="${skillHref(f.skill)}"><strong>${esc(skillName(ctx, f.skill))}</strong></a> food: ${itemLink(ctx, f.item)} <span class="small">${f.replaces ? `instead of ${itemLink(ctx, f.replaces)}` : '<span class="muted">none selected</span>'}</span>
+      <span class="sub muted small">${bonus} · you have ${exact(f.have)}</span>
+      ${gainLines(ctx, { skill: f.skill, changes: [], gain: f.gain }, null).map((l) => `<span class="sub small accent-text">${l}</span>`).join('')}</span></li>`;
+  });
+  return card('Food for your skills', `<p class="small muted">Some foods help a skill while they're selected in that skill's own food slot, as long as you have some.</p><ul class="list-plain">${rows.join('')}</ul>`, ' style="margin-top:12px"');
 }

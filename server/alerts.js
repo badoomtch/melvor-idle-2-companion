@@ -1,19 +1,22 @@
 // Alerts the companion sends as desktop notifications while it runs, page open or not: level-ups,
-// goals reached, supplies running out, and progress stopping (plan steps done: see route-watcher.js). Off until you switch them on in
+// goals reached, supplies running out, progress stopping (plan steps done: see route-watcher.js), farming plots
+// ready to harvest, and ranch animals hungry, sick or about to die of age. Off until you switch them on in
 // Settings; the page then leaves desktop notifications to this, so nothing arrives twice.
 // The settings live in the companion's own folder (alerts.json next to the history).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { farmingPlots } from '../engine/farming-plots.js';
 import { playerBonuses, playerState } from '../engine/gamedata.js';
+import { ranchModel } from '../engine/ranch.js';
 import { activityKey, currentSupplies, totalXp } from '../engine/supplies.js';
 
-export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, useBonuses: true, checkUpdates: true, goals: [] };
+export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, useBonuses: true, checkUpdates: true, goals: [] };
 
 // Only the known fields, with sane types, so a bad request can't store junk.
 export function cleanSettings(input = {}) {
   const s = { ...DEFAULT_ALERT_SETTINGS };
-  for (const key of ['enabled', 'levelUps', 'runningOut', 'stopped', 'planSteps', 'useBonuses', 'checkUpdates']) if (typeof input[key] === 'boolean') s[key] = input[key];
+  for (const key of ['enabled', 'levelUps', 'runningOut', 'stopped', 'planSteps', 'harvests', 'ranch', 'useBonuses', 'checkUpdates']) if (typeof input[key] === 'boolean') s[key] = input[key];
   if (Number.isFinite(input.minutes)) s.minutes = Math.min(Math.max(Math.round(input.minutes), 1), 600);
   if (Array.isArray(input.goals)) {
     s.goals = input.goals
@@ -22,6 +25,29 @@ export function cleanSettings(input = {}) {
       .map((g) => ({ skill: g.skill.slice(0, 64), target: Math.round(g.target) }));
   }
   return s;
+}
+
+const HOUR_MS = 3_600_000;
+
+// Plots that need you when they're ready: not the ones set to harvest themselves.
+const harvestPlots = (gd, save, at) => (farmingPlots(gd, save, at)?.plots ?? [])
+  .filter((p) => !p.auto?.harvest && (p.state === 'grown' || ((p.state === 'growing' || p.state === 'regrowing') && p.readyAt != null)))
+  .map((p) => ({ id: p.id, name: p.name, crop: p.method?.name ?? p.recipe, grown: p.state === 'grown', readyAt: p.readyAt }));
+
+// Ranch problems worth a notification, one per enclosure and kind: hungry, sick, or an animal that dies
+// of age within the hour with nothing set to replace it.
+function ranchProblems(gd, save, at) {
+  const ranch = ranchModel(gd, save, { now: at, bonuses: [] });
+  const out = [];
+  for (const e of ranch?.enclosures ?? []) {
+    for (const a of e.attention) {
+      if (a.kind === 'hungry') out.push({ key: `hungry:${e.land}`, title: a.count === 1 ? 'An animal is hungry' : 'Animals are hungry', body: a.text });
+      if (a.kind === 'sick') out.push({ key: `sick:${e.land}`, title: a.count === 1 ? 'An animal is sick' : 'Animals are sick', body: a.text });
+    }
+    const dying = e.animals.filter((a) => a.deathAt - at <= HOUR_MS && !e.autoBuy.includes(a.species));
+    if (dying.length) out.push({ key: `old:${e.land}`, title: 'Dying of old age within the hour', body: `${e.landName} (${e.name}): ${[...new Set(dying.map((a) => a.name))].join(', ')}. Auto-buy is off, so nothing will replace ${dying.length === 1 ? 'it' : 'them'}.` });
+  }
+  return out;
 }
 
 export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) {
@@ -35,7 +61,7 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
   // Per save: what's already been announced, so each warning fires once until it clears.
   const seen = new Map();
   const memo = (id) => {
-    if (!seen.has(id)) seen.set(id, { low: new Set(), stuck: null, lastSave: 0, stale: false });
+    if (!seen.has(id)) seen.set(id, { low: new Set(), stuck: null, lastSave: 0, stale: false, plots: [], harvested: new Set(), ranch: new Set() });
     return seen.get(id);
   };
 
@@ -53,6 +79,18 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
     else notify(`${events.length} updates from Melvor`, events.map((e) => e.title).join(' · '));
   }
 
+  // Plots that have become ready since they were last announced: once per harvest. A plot is announced
+  // again only after it stops being ready (harvested, replanted or regrowing).
+  function harvestEvents(m, quiet = false) {
+    const t = now();
+    const ready = m.plots.filter((p) => p.grown || t >= p.readyAt);
+    const fresh = ready.filter((p) => !m.harvested.has(p.id));
+    m.harvested = new Set(ready.map((p) => p.id));
+    if (quiet || !fresh.length) return [];
+    if (fresh.length === 1) return [{ title: `${fresh[0].crop} is ready to harvest`, body: fresh[0].name }];
+    return [{ title: `${fresh.length} plots are ready to harvest`, body: [...new Set(fresh.map((p) => p.crop))].join(', ') }];
+  }
+
   // A new parse of a save. `before` is the previous parse of the same save (or null).
   // `save` includes the server's history and measured flows.
   function onSave(id, before, save) {
@@ -62,8 +100,15 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
       m.lastSave = save.header.timestamp;
       m.stale = false;
     }
-    if (!settings.enabled || !before) return [];
-    const events = [];
+    // What's already ready when the companion starts (or while these alerts are off) isn't news.
+    m.plots = harvestPlots(gd, save, now());
+    const quiet = !settings.enabled || !before;
+    const harvests = harvestEvents(m, quiet || !settings.harvests);
+    const problems = settings.ranch ? ranchProblems(gd, save, now()) : [];
+    const newProblems = problems.filter((p) => !m.ranch.has(p.key));
+    m.ranch = new Set(problems.map((p) => p.key));
+    if (quiet) return [];
+    const events = [...harvests, ...newProblems.map(({ title, body }) => ({ title, body }))];
     const levels = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.level]));
     if (settings.levelUps) {
       for (const s of gd.skills) {
@@ -106,18 +151,22 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
     return events;
   }
 
-  // Called every few seconds: the game was saving, then went quiet for two minutes.
+  // Called every few seconds: the game was saving, then went quiet for two minutes. Plots that become
+  // ready between autosaves, or while the game is closed (they keep growing), are announced from here.
   function tick() {
-    if (!settings.enabled || !settings.stopped) return [];
+    if (!settings.enabled) return [];
     const events = [];
-    for (const m of seen.values()) {
-      if (m.lastSave && !m.stale && now() - m.lastSave > 120_000) {
-        m.stale = true;
-        events.push({ title: 'The game stopped saving', body: 'It may have been closed, paused or frozen.' });
+    if (settings.stopped) {
+      for (const m of seen.values()) {
+        if (m.lastSave && !m.stale && now() - m.lastSave > 120_000) {
+          m.stale = true;
+          events.push({ title: 'The game stopped saving', body: 'It may have been closed, paused or frozen.' });
+        }
       }
     }
-    send(events.slice(0, 1));
-    return events;
+    const harvests = settings.harvests ? [...seen.values()].flatMap((m) => harvestEvents(m)) : [];
+    send([...events.slice(0, 1), ...harvests]);
+    return [...events, ...harvests];
   }
 
   return { onSave, tick, setSettings, get settings() { return settings; } };

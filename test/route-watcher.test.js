@@ -63,7 +63,7 @@ test('plan notifications only go out when companion notifications are on', () =>
   }
 });
 
-test('a plan that is stuck gets replaced by itself, and asking for a new one works', () => {
+test('running out of something you can get adds a step to the same plan, and asking for a new one works', () => {
   const { w, done } = watcher();
   try {
     // Cooking with raw shrimp in the bank: then the shrimp are gone and nothing in the plan makes more.
@@ -74,13 +74,40 @@ test('a plan that is stuck gets replaced by itself, and asking for a new one wor
     assert.equal(step.method, 'Cooking/Shrimp', 'what you are doing goes first');
     clock += 120_000;
     const events = w.onSave('a', cook({}));
-    assert.ok(w.get('a').madeAt > first.madeAt, 'a new plan');
-    assert.match(events[0].title, /Out of Raw Shrimp/);
+    assert.equal(w.get('a').madeAt, first.madeAt, 'the same plan, with catching more shrimp added');
+    assert.ok(!events.some((e) => /Out of|new plan/.test(e.title)));
     clock += 1000;
     const again = w.replan('a');
     assert.ok(again && again.madeAt === clock && w.get('a') === again);
     assert.equal(w.replan('nope'), null);
   } finally {
     done();
+  }
+});
+
+test('a kept plan is replaced as soon as a step left needs something nothing you can do makes', async () => {
+  const { lockRoute } = await import('../engine/route-progress.js');
+  const { writeFileSync } = await import('node:fs');
+  const dir = mkdtempSync(join(tmpdir(), 'mc-routes-'));
+  try {
+    // A kept plan: chop trees, then smelt. You've since sold the ore the smelting needs, and your Mining
+    // is too low to mine more.
+    const minedAt = (item) => Math.min(...gd.methods.filter((m) => m.kind === 'mining' && m.product.item === item).map((m) => m.level));
+    const smelt = gd.methods.find((m) => m.skill === 'Smithing' && m.category === 'Smelting' && m.ingredients.length === 2 && m.level <= 30 && minedAt(m.ingredients[0].item) > 1);
+    const train = (method) => ({ kind: 'train', method, actions: 20, hours: 1, xpAfter: gd.xp.xpForLevel(31), xpGain: gd.xp.xpForLevel(31) - gd.xp.xpForLevel(30), toLevel: 31, levelUps: [] });
+    const kept = { ...lockRoute({ legs: [
+      { kind: 'unlock', skill: 'Woodcutting', from: 30, to: 31, unlocks: [], steps: [train(gd.methodByKey.get('Woodcutting/NormalTree'))] },
+      { kind: 'unlock', skill: 'Smithing', from: 30, to: 31, unlocks: [], steps: [train(smelt)] },
+    ] }), madeAt: clock - 120_000 };
+    writeFileSync(join(dir, 'routes.json'), JSON.stringify({ a: kept }));
+    const w = createRouteWatcher({ gd, dir, notify: () => {}, settings: () => ({ enabled: true, planSteps: true }), now: () => clock });
+    const low = save(30, {});
+    low.skills.Mining = { level: 1, xp: 0 };
+    const events = w.onSave('a', low);
+    assert.ok(w.get('a').madeAt > kept.madeAt, 'a new plan from the bank as it is');
+    assert.equal(w.get('a').why.short, smelt.ingredients[0].item);
+    assert.match(events[0].title, /Not enough .*: new plan/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

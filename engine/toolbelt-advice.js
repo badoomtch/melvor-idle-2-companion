@@ -243,6 +243,30 @@ export function toolbeltAdvice(gd, save, { levels, current = null, fight = null 
   return out;
 }
 
+/**
+ * Food worth selecting in a skill's own food slot for its bonus (sushi's stealth in Thieving), from
+ * the foods in your bank, measured like a toolbelt swap on the skill's best methods.
+ * @returns [{ skill, item, have, replaces, gain }]
+ */
+export function foodAdvice(gd, save, { levels, current = null }) {
+  const bank = save?.bank?.items ?? {};
+  const skills = new Set(Object.values(gd.items).map((it) => it.foodBonus?.entity).filter((e) => e && e !== 'Combat' && gd.methodsBySkill[e]));
+  const out = [];
+  for (const skill of skills) {
+    const now = save.foods?.[skill] ?? null;
+    const measure = (food) => skillMeasure(gd, { ...save, foods: { ...save.foods, [skill]: food } }, skill, (save.toolbelts?.[skill] ?? []).filter((t) => t.slot), levels);
+    const base = measure(now);
+    let best = null;
+    for (const [id, qty] of Object.entries(bank)) {
+      if (!(qty > 0) || id === now || gd.items[id]?.foodBonus?.entity !== skill) continue;
+      const c = compare(base, measure(id), current);
+      if (c.score >= MIN_SHARE && (!best || c.score > best.gain.score)) best = { item: id, gain: c };
+    }
+    if (best) out.push({ skill, ...best, have: bank[best.item], replaces: now });
+  }
+  return out.sort((a, b) => b.gain.score - a.gain.score);
+}
+
 // How fast a plan step goes: XP for training, the item it's gathering, actions for a Mastery task.
 function stepRate(step, r) {
   if (step.kind === 'train') return r.xpPerHour;

@@ -78,13 +78,13 @@ const clamp01 = (x) => Math.min(1, Math.max(0, x));
 // A hunting catch: its size and weight each roll between 0.5 and 1.3 times the animal's average, plus
 // the journal level / 100, and each product's quantity is scaled by their mean before doubling and
 // rounding down (HuntingAnimalJournalEntry.GenerateStatEntry, HuntingActionComponent.OnAnimalTrapped).
-function huntingCatch(qty, journal, doubling) {
+function huntingCatch(qty, journal, doubling, rare = 1) {
   const N = 24;
   const lo = 0.5 + journal / 100;
   let total = 0;
   for (let i = 0; i < N; i++) {
     for (let j = 0; j < N; j++) {
-      const n = Math.max(1, qty * (lo + (0.8 * ((i + 0.5) / N + (j + 0.5) / N)) / 2));
+      const n = rare * Math.max(1, qty * (lo + (0.8 * ((i + 0.5) / N + (j + 0.5) / N)) / 2));
       total += (1 - doubling) * Math.max(1, Math.floor(n)) + doubling * Math.max(1, Math.floor(2 * n));
     }
   }
@@ -93,11 +93,30 @@ function huntingCatch(qty, journal, doubling) {
 const capital = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 function newAcc() {
-  return { outputs: new Map(), inputs: new Map(), currencies: new Map(), xp: 0, hpLoss: 0 };
+  return { outputs: new Map(), inputs: new Map(), currencies: new Map(), chances: new Map(), xp: 0, hpLoss: 0 };
 }
 const bump = (map, key, n) => n && map.set(key, (map.get(key) ?? 0) + n);
 
 // Fills an accumulator with the expected result of ONE reward cycle and returns its duration.
+// What a find gives when it happens: Astrology adds 0 to level × its scaling on top of the base,
+// Firemaking scales with the burn time in seconds.
+export const eventQuantity = (ev, level, ms) => (ev.perSecond ? Math.max(1, Math.floor(ev.qty * (ms / 1000))) : ev.qty + level * (ev.perLevel ?? 0));
+
+// Finds rolled once per action, while their requirements are met. Astrology's chances and doubling
+// take bonuses for each event (AstrologyEventStats); Firemaking's don't.
+function rollEvents(gd, method, level, acc, options, ms) {
+  for (const ev of method.events ?? []) {
+    if (ev.requires.length) {
+      const req = gd.checkRequirements({ skill: null, level: 0, requires: ev.requires }, gd.player?.levels ?? {});
+      if (!req.ok || req.unknown.length) continue;
+    }
+    const b = options.eventBonus?.[ev.name] ?? {};
+    const chance = clamp01(ev.chance * (1 + (b.pct ?? 0)) + (b.flat ?? 0));
+    bump(acc.outputs, ev.item, chance * eventQuantity(ev, level, ms) * (1 + (b.doubling ?? 0)));
+    acc.chances.set(ev.item, chance);
+  }
+}
+
 function cycle(gd, method, level, acc, options = {}) {
   switch (method.kind) {
     case 'woodcutting': {
@@ -106,19 +125,28 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const x of method.perHit) bump(acc.outputs, x.item, x.chance * x.qty * hits);
       for (const x of method.perCut) bump(acc.outputs, x.item, x.chance * x.qty);
       acc.xp += method.xp;
-      return { ms: hits * method.interval, note: `${Number.isInteger(hits) ? hits : hits.toFixed(1)} hits per log` };
+      return { ms: hits * method.interval, per: { hit: hits }, note: `${Number.isInteger(hits) ? hits : hits.toFixed(1)} hits per log` };
     }
     case 'mining': {
       const hits = miningExpectedHits(method.breakChance, method.minProspecting ?? 0);
-      bump(acc.outputs, method.product.item, method.product.qty + (method.extraOreChance ?? 0));
+      // When the rock breaks, a shatter triples the ore and doubles the XP, and a pickaxe's bar chance
+      // adds the ore's bar (MiningActionComponent.ActionTimerFiredHandler).
+      const shatter = method.shatterChance ?? 0;
+      bump(acc.outputs, method.product.item, (method.product.qty + (method.extraOreChance ?? 0)) * (1 + 2 * shatter));
+      if (method.bar) bump(acc.outputs, method.bar, method.barChance ?? 0);
       for (const x of method.perHit) bump(acc.outputs, x.item, x.chance * x.qty * hits);
       for (const t of gd.usedTools(method)) bump(acc.inputs, t.item, t.usedPer === 'hit' ? hits : 1);
-      acc.xp += method.xp;
-      return { ms: hits * method.interval, note: `${hits.toFixed(2)} hits per ore` };
+      acc.xp += method.xp * (1 + shatter);
+      return { ms: hits * method.interval, per: { hit: hits }, note: `${hits.toFixed(2)} hits per ore` };
     }
     case 'fishing': {
       for (const x of expectTable(method.products)) bump(acc.outputs, x.item, method.fishChance * x.qty);
-      if (method.junk) bump(acc.outputs, method.junk, 1 - method.fishChance);
+      // Junk can be turned straight into gold (JunkToGP) instead of landing in the bank.
+      if (method.junk && options.junkToGP > 0) bump(acc.currencies, gd.items[method.junk]?.currency ?? GP, (1 - method.fishChance) * (gd.items[method.junk]?.sell ?? 0) * options.junkToGP);
+      else if (method.junk) bump(acc.outputs, method.junk, 1 - method.fishChance);
+      // The bait you've selected is used up on every catch while you have some.
+      const bait = gd.player?.fishingBait;
+      if (bait && (gd.player.owned?.[bait] ?? 0) > 0) bump(acc.inputs, bait, 1);
       // Special items are tried rarest first and the first hit stops the roll; a second roll can follow
       // a hit (FishingActionComponent.RollForSpecialItem).
       let none = 1;
@@ -129,7 +157,7 @@ function cycle(gd, method, level, acc, options = {}) {
       });
       for (const x of specials) bump(acc.outputs, x.item, x.p * x.qty * (1 + (1 - none) * (method.secondSpecialChance ?? 0)));
       acc.xp += method.xp;
-      return { ms: avg(method.minInterval, method.maxInterval), note: `${Math.round(method.fishChance * 100)}% fish, rest junk` };
+      return { ms: avg(method.minInterval, method.maxInterval), per: { catch: method.fishChance }, note: `${Math.round(method.fishChance * 100)}% fish, rest junk` };
     }
     case 'thieving': {
       const s = thievingSuccessChance(gd, method, level, options);
@@ -139,6 +167,16 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const x of thievingLoot(method.common, fortune, doubling)) bump(acc.outputs, x.item, s * method.commonChance * x.qty);
       for (const x of thievingLoot(method.rare, fortune, doubling)) bump(acc.outputs, x.item, s * method.rareChance * x.qty);
       for (const x of thievingLoot(method.completion, fortune, doubling)) bump(acc.outputs, x.item, (s / method.stages) * x.qty);
+      // A success can also pickpocket every other target of the same type in the area you can do,
+      // each rolling its own success: their gold and loot, no XP (ThievingActionComponent.AddPickpocketRewards).
+      if (options.sameArea > 0) {
+        for (const other of gd.methods.filter((x) => x.kind === 'thieving' && x.key !== method.key && x.category === method.category && x.type === method.type && x.level <= level)) {
+          const share = s * options.sameArea * thievingSuccessChance(gd, other, level, options);
+          bump(acc.currencies, other.currency.currency, share * other.currencyChance * avg(other.currency.min, other.currency.max));
+          for (const x of thievingLoot(other.common, fortune, doubling)) bump(acc.outputs, x.item, share * other.commonChance * x.qty);
+          for (const x of thievingLoot(other.rare, fortune, doubling)) bump(acc.outputs, x.item, share * other.rareChance * x.qty);
+        }
+      }
       acc.xp += (s * method.xp) / method.stages;
       // A failure hits for 1 to the target's damage (ThievingActionComponent.DamagePlayer), unless avoided.
       acc.hpLoss += (1 - s) * (1 - (options.damageAvoidance ?? 0)) * (method.damage > 0 ? (method.damage + 1) / 2 : 0);
@@ -154,16 +192,18 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const c of method.currencyCosts) bump(acc.currencies, c.currency, -c.qty);
       for (const x of method.products) bump(acc.outputs, x.item, s * x.chance * x.qty);
       acc.xp += s * method.xp;
-      return { ms: method.steps * method.interval, successChance: method.kind === 'cooking' ? s : undefined, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
+      return { ms: method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
     }
     case 'firemaking': {
       for (const x of method.ingredients) bump(acc.inputs, x.item, x.qty);
       for (const x of method.products) bump(acc.outputs, x.item, x.chance * x.qty);
       if (method.reward) bump(acc.currencies, method.reward.currency, method.reward.qty);
+      rollEvents(gd, method, level, acc, options, method.interval);
       acc.xp += method.xp;
       return { ms: method.interval };
     }
     case 'astrology': {
+      rollEvents(gd, method, level, acc, options, method.interval);
       acc.xp += method.xp;
       return { ms: method.interval };
     }
@@ -172,7 +212,7 @@ function cycle(gd, method, level, acc, options = {}) {
       // tracking steps, then trap attempts; each failed trap adds the minimum steps again. Every
       // attempt uses up a trap unless preservation saves it, and a better trap's success bonus
       // grows with each miss until the catch.
-      const trap = huntingTrap(gd, method, options);
+      const trap = options.trapless ? null : huntingTrap(gd, method, options);
       const p = method.trackChance;
       const q0 = Math.min(1, Math.max(0.01, method.trapChance + (trap?.success ?? 0)));
       let attempts = 0;
@@ -186,16 +226,32 @@ function cycle(gd, method, level, acc, options = {}) {
       // A skip chance can take two tracking steps at once; after a miss the trap is re-set straight
       // away with the re-attempt chance, otherwise the minimum steps are tracked again.
       const stepsFor = (n) => expectedActions(n, options.skipTrackingStep ?? 0);
+      // An animal not yet discovered in your journal tracks 4 times its most steps (ActiveHuntingAnimal).
+      const undiscovered = gd.player?.huntingJournal?.[method.id]?.discovered === false;
       let steps = 0;
-      for (let n = method.steps.min; n <= method.steps.max; n++) steps += stepsFor(n) / (method.steps.max - method.steps.min + 1);
+      if (undiscovered) steps = stepsFor(method.steps.max * 4);
+      else for (let n = method.steps.min; n <= method.steps.max; n++) steps += stepsFor(n) / (method.steps.max - method.steps.min + 1);
       const retrack = (1 - (options.trapReattempt ?? 0)) * stepsFor(method.steps.min);
       const ms = method.surveyInterval * surveys + steps * track + avg(method.trapInterval.min, method.trapInterval.max) * attempts + (attempts - 1) * retrack * track;
       // XP and products scale with the catch's size and weight, which grow with the journal level.
       const journal = options.journalLevel ?? gd.player?.huntingJournal?.[method.id] ?? 1;
-      for (const x of method.products) bump(acc.outputs, x.item, x.chance * huntingCatch(x.qty, journal, options.doubling ?? 0));
+      // A rare species doubles every product and adds its own drops (HuntingActionComponent.OnAnimalTrapped).
+      const doubling = options.doubling ?? 0;
+      const rare = (method.rareSpecies ?? []).length ? method.rareChance ?? 0 : 0;
+      for (const x of method.products) bump(acc.outputs, x.item, x.chance * ((1 - rare) * huntingCatch(x.qty, journal, doubling) + rare * huntingCatch(x.qty, journal, doubling, 2)));
+      const weights = (method.rareSpecies ?? []).reduce((s, sp) => s + sp.weight, 0);
+      for (const sp of method.rareSpecies ?? []) for (const x of sp.extra) bump(acc.outputs, x.item, rare * (sp.weight / weights) * x.chance * x.qty * (1 + doubling));
       if (trap) bump(acc.inputs, trap.item, attempts * (1 - Math.min(1, trap.preservation + (options.huntingPreservation ?? 0))));
+      if (options.huntingBait) bump(acc.inputs, options.huntingBait, attempts);
+      // Surveys can turn up a find, at most one per catch: each survey rolls until one does.
+      const noFind = (method.survey ?? []).reduce((q, x) => q * (1 - x.chance), 1);
+      const chanceSum = (method.survey ?? []).reduce((s, x) => s + x.chance, 0);
+      const finds = 1 - noFind ** surveys;
+      for (const x of method.survey ?? []) bump(acc.outputs, x.item, finds * (x.chance / chanceSum) * x.qty);
       acc.xp += method.xp * (0.9 + journal / 100);
-      return { ms, successChance: q0, note: `${Math.round(q0 * 100)}% trap success${trap ? ` · ${attempts.toFixed(1)} traps tried per catch` : ''} · journal level ${journal}` };
+      // The success chance shows on its own, so the note says how you're hunting.
+      const note = [trap ? `${attempts.toFixed(1)} traps tried per catch` : options.trapless ? 'trapless' : null, options.huntingBait ? `with ${gd.itemName(options.huntingBait)}` : null, `journal level ${journal}`, undiscovered ? 'not discovered yet, so 4 times the tracking' : null];
+      return { ms, successChance: q0, note: note.filter(Boolean).join(' · ') };
     }
     case 'agility': {
       // AgilityActionComponent / ActiveAgilityObstacle: obstacles in order; a failure costs HP and
@@ -207,6 +263,7 @@ function cycle(gd, method, level, acc, options = {}) {
       let reached = 1; // chance a run gets this far without restarting
       let clean = 1; // chance of passing every obstacle so far first time (for the marks)
       let time = 0;
+      let obstacles = 0;
       let hp = 0;
       let markShare = 0;
       let rewardQty = 0;
@@ -224,7 +281,9 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const s of steps) {
         const visits = reached / finish; // arrivals at this obstacle per completed run
         time += s.ms * s.attempts * visits;
-        hp += s.fails * visits * ((s.o.damage + 1) / 2);
+        obstacles += s.attempts * visits;
+        // AgilityActionComponent.ModifyObstacleDamage: damage-taken bonuses scale each hit (at least 1).
+        if (s.o.damage > 0) hp += s.fails * visits * (1 - (options.agilityAvoidDamage ?? 0)) * Math.max(1, ((s.o.damage + 1) / 2) * (1 + (options.agilityDamageTaken ?? 0)));
         reached *= s.pass;
         clean *= s.p;
         markShare += clean / n;
@@ -239,7 +298,7 @@ function cycle(gd, method, level, acc, options = {}) {
       acc.xp += method.xp;
       acc.hpLoss += hp;
       const techniqueNote = method.techniqueXp && method.technique ? `+${method.techniqueXp} ${method.technique} XP per run` : '';
-      return { ms: time, successChance: finish, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
+      return { ms: time, per: { obstacle: obstacles }, successChance: finish, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
     }
     case 'ranching': {
       // Per animal per hour (ActiveRanchingAnimal): fed and kept safe, with no treats or pack bonus,
@@ -264,17 +323,30 @@ function cycle(gd, method, level, acc, options = {}) {
       // against cut every harvest, and watering (assumed) protects against disease.
       for (const x of method.ingredients) bump(acc.inputs, x.item, x.qty);
       if (method.flower) return { ms: method.interval, note: 'no harvest: it protects the plots around it', passive: true };
+      // Compost: the best you have, one per planting (ActiveFarmingPlot.Compost), for its yield or XP bonus.
+      const compost = options.compost !== undefined ? options.compost : bestCompost(gd);
+      const compostBonus = (stat) => (compost ? gd.items[compost].compost.effects.filter((e) => e.stat === stat).reduce((s, e) => s + e.value, 0) : 0);
+      if (compost) bump(acc.inputs, compost, 1);
       const harvests = 1 + Math.max(0, (method.regrows ?? 0) + (options.flatRegrows ?? 0));
       const exposed = Math.max(0, (method.pests ?? 0) - (options.pestProtection ?? 0)) + Math.max(0, (method.disease ?? 0) - (method.watering ?? 0) - (options.diseaseProtection ?? 0));
-      const qty = Math.max(1, Math.trunc((method.product.qty + (options.flatProductQuantity ?? 0)) * (1 + (options.percentProductQuantity ?? 0)) * (1 - exposed / 100)));
+      const qty = Math.max(1, Math.trunc((method.product.qty + (options.flatProductQuantity ?? 0)) * (1 + (options.percentProductQuantity ?? 0) + compostBonus('PercentProductQuantity')) * (1 - exposed / 100)));
       bump(acc.outputs, method.product.item, qty * harvests);
-      acc.xp += method.xp * harvests;
-      const notes = [harvests > 1 ? `${harvests} harvests per seed` : '', exposed > 0 ? `${Math.min(100, Math.round(exposed))}% lost to pests and disease` : '', method.watering ? 'watered' : ''];
-      return { ms: method.interval + (harvests - 1) * (method.regrowInterval ?? 0), note: ['per plot', ...notes].filter(Boolean).join(' · '), passive: true };
+      acc.xp += method.xp * harvests * (1 + compostBonus('PercentXPGained'));
+      const notes = [harvests > 1 ? `${harvests} harvests per seed` : '', exposed > 0 ? `${Math.min(100, Math.round(exposed))}% lost to pests and disease` : '', method.watering ? 'watered' : '', compost ? `with ${gd.itemName(compost)}` : ''];
+      return { ms: method.interval + (harvests - 1) * (method.regrowInterval ?? 0), per: { harvest: harvests }, note: ['per plot', ...notes].filter(Boolean).join(' · '), passive: true };
     }
     default:
       throw new Error(`Unknown method kind: ${method.kind}`);
   }
+}
+
+// The compost a planting gets: the one you own that adds the most yield (XP compost counts for less).
+function bestCompost(gd) {
+  const owned = gd.player?.owned;
+  if (!owned) return null;
+  const worth = (id) => gd.items[id].compost.effects.reduce((s, e) => s + (e.stat === 'PercentProductQuantity' ? e.value : e.stat === 'PercentXPGained' ? e.value / 2 : 0), 0);
+  const have = Object.keys(owned).filter((id) => owned[id] > 0 && gd.items[id]?.compost);
+  return have.length ? have.reduce((a, b) => (worth(b) > worth(a) ? b : a)) : null;
 }
 
 // The trap a hunting method uses: options.trap, else the best of its type you own, else the basic one.
@@ -301,22 +373,31 @@ export const MODELLED_BONUS_STATS = new Set([
   'FlatSpecialProductChance', 'FlatSpecialProductQuantity', 'IncreasedSpecialProductChance', 'SecondSpecialItemChance',
   'FlatStealth', 'PercentStealth', 'FlatPerception', 'PercentPerception', 'PercentStunInterval', 'StunAvoidanceChance', 'DamageAvoidanceChance', 'FlatStages',
   'FlatFortune', 'FlatFortuneUnderSuccess', 'FlatCurrencyReward', 'PercentCurrencyReward', 'PercentCommonLootChance', 'PercentRareLootChance', 'PercentCurrencyLootChance',
+  'SameAreaPickpocketChance', 'JunkToGP',
   'FlatDifficulty', 'FlatProductChance', 'IncreasedProductChance',
   'PercentPreparingInterval', 'PercentHeatingInterval', 'PercentStirringInterval', 'PercentBottlingInterval',
   'FlatPreparingInterval', 'FlatHeatingInterval', 'FlatStirringInterval', 'FlatBottlingInterval',
   'FlatPestProtection', 'FlatDiseaseProtection', 'FlatRegrows',
+  'PercentDamageTaken', 'AvoidDamageChance',
   'FlatTrappingSuccessChance', 'IncreasedTrappingSuccessChance', 'FlatTrackingSuccessChance', 'IncreasedTrackingSuccessChance', 'PercentSurveyInterval', 'FlatSurveyInterval',
   'PercentTrackingInterval', 'PercentMinTrackingInterval', 'PercentMaxTrackingInterval', 'FlatTrackingInterval', 'FlatMinTrackingInterval', 'FlatMaxTrackingInterval',
   'PercentTrappingInterval', 'PercentMinTrappingInterval', 'PercentMaxTrappingInterval', 'FlatTrappingInterval', 'FlatMinTrappingInterval', 'FlatMaxTrappingInterval',
-  'FlatTrackingSteps', 'FlatMinTrackingSteps', 'FlatMaxTrackingSteps', 'SkipTrackingStepChance', 'TrappingReattemptChance',
+  'FlatTrackingSteps', 'FlatMinTrackingSteps', 'FlatMaxTrackingSteps', 'SkipTrackingStepChance', 'TrappingReattemptChance', 'FlatRareSpeciesChance', 'IncreasedRareSpeciesChance',
+  'PercentEventChance', 'FlatEventChance', 'ItemDoublingChance', 'ShatterChance', 'BarItemChance',
 ]);
 
+// Bonuses that belong to something next to the skill's own action: the Grain Mill, toolbelt items,
+// fishing bait, bonfires, the bank. Their stats share names with action stats (PreservationChance).
+const NOT_ACTION_STATS = new Set(['GrainMill', 'GrainMillInventory', 'Toolbelt', 'FishingBait', 'FiremakingBonfire', 'BankInventory', 'ItemBurying']);
+
 export function bonusApplies(effect, method) {
-  if (effect.skill !== method.skill || !MODELLED_BONUS_STATS.has(effect.stat)) return false;
+  if (effect.skill !== method.skill || !MODELLED_BONUS_STATS.has(effect.stat) || NOT_ACTION_STATS.has(effect.stats)) return false;
   for (const [key, value] of Object.entries(effect.scope ?? {})) {
     // Fishing spots keep their location in `category`. An item scope (extra bird nests per hit) is
     // matched against the method's items when the rates are worked out.
     if (key === 'Item' && effect.stat === 'FlatOnHitItemQuantity') continue;
+    // An event scope (Starfall chance) is matched to each event when its finds are worked out.
+    if (key === 'Event') continue;
     if (key === 'Category' || key === 'Location' ? value !== method.category : key === 'Subcategory' ? value !== method.subcategory : key === 'Recipe' ? value !== method.id : true) return false;
   }
   return true;
@@ -337,8 +418,49 @@ const primaryProducts = (method) => new Set([method.product?.item, ...(method.pr
  * (gd.playerBonuses, set from the save) unless options.bonuses says otherwise ([] for base rates).
  * Damage taken (thieving) is paid for with food: options.food, else gd.preferredFood, else the cheapest food per HP.
  */
+// Toolbelt items used up as you work (potions, Blackstone): one each time what uses them happens, per
+// hit, catch, craft step and so on (ToolbeltCapability.ConsumesOn), less any toolbelt preservation for
+// that item (the Burning Embers Gloves keep Blackstone). Tools a method needs are counted with it.
+const TOOL_USED_PER = { WoodcuttingDamageTree: 'hit', MiningMineRock: 'hit', FishingFishRecipe: 'catch', ArtisanPerformStep: 'step', AgilityObstacleAttempted: 'obstacle', FarmingRecipeGrown: 'harvest' };
+const NOT_SKILLING = new Set(['CharacterTurnEnded', 'CharacterAttacked', 'CharacterFightStarted', 'EnemySpawned', 'FoodEaten', 'RanchingAnimalFed']);
+function toolUse(gd, method, c, acc, effects) {
+  const out = [];
+  const required = new Set(gd.usedTools(method).map((t) => t.item));
+  const s = c.successChance ?? 1;
+  // How many times per action one use applies to this method, within its limits.
+  const times = (u) => {
+    if (NOT_SKILLING.has(u.type) || u.conditions) return 0;
+    if ((u.recipe && u.recipe !== method.id) || (u.category && u.category !== method.category) || (u.subcategory && u.subcategory !== method.subcategory) || (u.recipeType && u.recipeType !== method.type)) return 0;
+    if (u.minSteps && (method.steps ?? 1) < u.minSteps) return 0;
+    if (u.currency && !((acc.currencies.get(u.currency) ?? 0) > 0)) return 0;
+    return (c.per?.[TOOL_USED_PER[u.type] ?? 'action'] ?? 1) * (u.success ? s : u.fail ? 1 - s : 1) * (u.chance ?? 1);
+  };
+  for (const t of gd.player?.toolbelts?.[method.skill] ?? []) {
+    const tool = gd.items[t.item]?.tool;
+    if (!tool?.usedUp || !Array.isArray(tool.usedOn) || required.has(t.item) || !(t.qty > 0)) continue;
+    const n = tool.usedOn.reduce((sum, u) => sum + times(u), 0);
+    if (!(n > 0)) continue;
+    const keep = effects.filter((e) => e.stats === 'Toolbelt' && e.stat === 'PreservationChance' && e.skill === method.skill && (!e.scope?.Item || e.scope.Item === gd.itemName(t.item))).reduce((sum, e) => sum + e.value, 0);
+    out.push({ item: t.item, n: n * (1 - clamp01(keep)) });
+  }
+  return out;
+}
+
+// How you'd hunt an animal with what you have: its bait while you have some, and trapless when it's
+// allowed and you have no trap for it. Their bonuses count like any other.
+function huntingChoices(gd, method) {
+  const owned = gd.player?.owned;
+  if (method.kind !== 'hunting' || !owned) return null;
+  const bait = method.bait && owned[method.bait.item] > 0 ? method.bait : null;
+  const hasTrap = (method.traps ?? []).some((t) => owned[t.item] > 0);
+  const trapless = method.trapless && !hasTrap && gd.player.levels && gd.checkRequirements({ skill: null, level: 0, requires: method.trapless.requires }, gd.player.levels).ok ? method.trapless : null;
+  return { bait: bait?.item ?? null, trapless: !!trapless, effects: [...(bait?.effects ?? []), ...(trapless?.effects ?? [])] };
+}
+
 export function computeRates(gd, method, level = method.level, options = {}) {
-  const effects = (options.bonuses ?? gd.playerBonuses ?? []).filter((e) => bonusApplies(e, method));
+  const choices = options.bonuses ? null : huntingChoices(gd, method);
+  if (choices) options = { ...options, huntingBait: choices.bait, trapless: choices.trapless };
+  const effects = [...(options.bonuses ?? gd.playerBonuses ?? []), ...(choices?.effects ?? [])].filter((e) => bonusApplies(e, method));
   if (!effects.length) return baseRates(gd, method, level, options);
   const sum = (stat) => effects.filter((e) => e.stat === stat).reduce((s, e) => s + e.value, 0);
   const whole = Math.trunc;
@@ -353,7 +475,7 @@ export function computeRates(gd, method, level = method.level, options = {}) {
     const time = (t) => Math.max(1, Math.floor(m.kind === 'artisan' || m.kind === 'cooking' ? t * (1 + pi) + fi : (t + fi) * (1 + pi)));
     m = { ...m, interval: time(m.interval), ...(m.regrowInterval ? { regrowInterval: time(m.regrowInterval) } : {}) };
   }
-  if (m.kind === 'agility') Object.assign(extra, { agilityIntervalFlat: fi, agilityIntervalPct: pi });
+  if (m.kind === 'agility') Object.assign(extra, { agilityIntervalFlat: fi, agilityIntervalPct: pi, agilityDamageTaken: sum('PercentDamageTaken'), agilityAvoidDamage: sum('AvoidDamageChance') });
 
   switch (m.kind) {
     case 'woodcutting': {
@@ -372,6 +494,8 @@ export function computeRates(gd, method, level = method.level, options = {}) {
         breakChance: Math.min(1, m.breakChance * (1 + sum('PercentIncreaseRockBreakChance'))),
         minProspecting: sum('FlatMinimumProspecting'),
         extraOreChance: sum('AdditionalProductQuantityChance'),
+        shatterChance: clamp01(sum('ShatterChance')),
+        barChance: clamp01(sum('BarItemChance')),
         product: { ...m.product, qty: m.product.qty + whole(sum('FlatProductQuantity')) },
         perHit: [...m.perHit, ...drops(cfg.stones ?? [], sum('StoneItemChance')), ...drops(cfg.essences ?? [], sum('EssenceItemChance'))],
       };
@@ -392,6 +516,7 @@ export function computeRates(gd, method, level = method.level, options = {}) {
         special: m.special.map((x) => ({ ...x, chance: clamp01(x.chance + sum('FlatSpecialProductChance') + x.chance * sum('IncreasedSpecialProductChance')), qty: x.qty + whole(sum('FlatSpecialProductQuantity')) })),
         secondSpecialChance: sum('SecondSpecialItemChance'),
       };
+      extra.junkToGP = sum('JunkToGP');
       break;
     }
     case 'thieving': {
@@ -406,7 +531,7 @@ export function computeRates(gd, method, level = method.level, options = {}) {
         rareChance: clamp01(m.rareChance * (1 + sum('PercentRareLootChance'))),
         currencyChance: clamp01(m.currencyChance * (1 + sum('PercentCurrencyLootChance'))),
       };
-      Object.assign(extra, { flatStealth: sum('FlatStealth'), percentStealth: sum('PercentStealth'), percentStunInterval: sum('PercentStunInterval'), stunAvoidance: sum('StunAvoidanceChance'), damageAvoidance: sum('DamageAvoidanceChance'), fortune: sum('FlatFortune'), fortuneUnderSuccess: sum('FlatFortuneUnderSuccess'), doubling: sum('DoublingChance') });
+      Object.assign(extra, { flatStealth: sum('FlatStealth'), percentStealth: sum('PercentStealth'), percentStunInterval: sum('PercentStunInterval'), stunAvoidance: sum('StunAvoidanceChance'), damageAvoidance: sum('DamageAvoidanceChance'), sameArea: sum('SameAreaPickpocketChance'), fortune: sum('FlatFortune'), fortuneUnderSuccess: sum('FlatFortuneUnderSuccess'), doubling: sum('DoublingChance') });
       break;
     }
     case 'artisan':
@@ -423,6 +548,11 @@ export function computeRates(gd, method, level = method.level, options = {}) {
         m = { ...m, interval: (stage('preparing') + stage('heating') + stage('stirring') + m.batch.bottlings * stage('bottling')) / m.batch.bottlings };
       }
       extra.proficiency = sum('FlatProficiency');
+      break;
+    }
+    case 'astrology': {
+      const of = (ev, stat) => effects.filter((e) => e.stat === stat && (!e.scope?.Event || e.scope.Event === ev.name)).reduce((s, e) => s + e.value, 0);
+      extra.eventBonus = Object.fromEntries((m.events ?? []).map((ev) => [ev.name, { pct: of(ev, 'PercentEventChance'), flat: of(ev, 'FlatEventChance'), doubling: of(ev, 'ItemDoublingChance') }]));
       break;
     }
     case 'firemaking': {
@@ -451,6 +581,7 @@ export function computeRates(gd, method, level = method.level, options = {}) {
         trapChance: clamp01(m.trapChance + sum('FlatTrappingSuccessChance') + m.trapChance * sum('IncreasedTrappingSuccessChance')),
         surveyInterval: Math.max(1, Math.floor((m.surveyInterval + sum('FlatSurveyInterval')) * (1 + sum('PercentSurveyInterval')))),
         products: m.products.map((x) => ({ ...x, qty: qtyOf(x.qty) })),
+        rareChance: clamp01((m.rareChance ?? 0) + sum('FlatRareSpeciesChance') + (m.rareChance ?? 0) * sum('IncreasedRareSpeciesChance')),
       };
       Object.assign(extra, { huntingPreservation: sum('PreservationChance'), skipTrackingStep: sum('SkipTrackingStepChance'), trapReattempt: sum('TrappingReattemptChance'), doubling: sum('DoublingChance') });
       break;
@@ -466,12 +597,14 @@ export function computeRates(gd, method, level = method.level, options = {}) {
   if (!doubling && !keep && !xp) return { ...r, method, bonuses: effects };
   const everything = ['woodcutting', 'mining', 'fishing', 'firemaking'].includes(m.kind);
   const primary = primaryProducts(method);
-  const outputs = r.outputs.map((o) => (everything || primary.has(o.item) ? { ...o, perHour: o.perHour * (1 + doubling), value: o.value * (1 + doubling) } : o));
+  // Finds aren't doubled (RollEvent adds them straight to the bank).
+  const found = new Set((method.events ?? []).map((e) => e.item));
+  const outputs = r.outputs.map((o) => ((everything && !found.has(o.item)) || primary.has(o.item) ? { ...o, perHour: o.perHour * (1 + doubling), value: o.value * (1 + doubling) } : o));
   const inputs = r.inputs.map((i) => ({ ...i, perHour: i.perHour * (1 - keep), value: i.value * (1 - keep) }));
   const currencies = m.kind === 'firemaking' && doubling ? Object.fromEntries(Object.entries(r.currencies).map(([c, n]) => [c, n > 0 ? n * (1 + doubling) : n])) : r.currencies;
   const gpCurrency = currencies[GP] ?? 0;
   const grossPerHour = outputs.reduce((s, o) => s + o.value, 0) + Math.max(0, gpCurrency);
-  const costPerHour = inputs.reduce((s, i) => s + i.value, 0) + Math.max(0, -gpCurrency) * (1 - keep) + (r.food?.value ?? 0);
+  const costPerHour = inputs.reduce((s, i) => s + i.value, 0) + Math.max(0, -gpCurrency) * (1 - keep) + (r.food?.value ?? 0) + r.toolUse.reduce((s, t) => s + t.value, 0);
   return { ...r, method, outputs, inputs, currencies, xpPerHour: r.xpPerHour * (1 + xp), grossPerHour, costPerHour, profitPerHour: grossPerHour - costPerHour, bonuses: effects };
 }
 
@@ -491,7 +624,9 @@ function baseRates(gd, method, level, options) {
   const heal = gd.items[foodItem]?.heal ?? 0;
   const foodPerHour = hpLossPerHour > 0 && heal > 0 ? hpLossPerHour / heal : 0;
   const food = hpLossPerHour > 0 ? { item: foodItem, perHour: foodPerHour, value: foodPerHour * gd.itemValue(foodItem) } : null;
-  const inputValue = inputs.reduce((s, i) => s + i.value, 0) + Math.max(0, -gpCurrency) + (food?.value ?? 0);
+  // With your own setup (not base rates), what your toolbelt uses up costs too.
+  const tools = options.bonuses ? [] : toolUse(gd, method, c, acc, gd.playerBonuses ?? []).map((t) => ({ item: t.item, perHour: t.n * perHour, value: t.n * perHour * gd.itemValue(t.item) }));
+  const inputValue = inputs.reduce((s, i) => s + i.value, 0) + Math.max(0, -gpCurrency) + (food?.value ?? 0) + tools.reduce((s, t) => s + t.value, 0);
   return {
     key: method.key,
     method,
@@ -510,6 +645,9 @@ function baseRates(gd, method, level, options) {
     food,
     passive: !!c.passive,
     note: c.note,
+    toolUse: tools,
+    // The chance per action of each find, for how long a first one takes.
+    ...(acc.chances.size ? { chancePerCycle: Object.fromEntries(acc.chances) } : {}),
   };
 }
 

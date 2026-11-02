@@ -186,6 +186,37 @@ export function playerBonuses(gd, save) {
     }
     for (const e of gd.raw.astrology?.perMinorNode?.[id] ?? []) if (c.minor.length) effects.push({ ...e, value: e.value * c.minor.length, source: `${c.minor.length} minor nodes (Astrology)` });
   }
+  // A lit bonfire, while it has time left, and each skill's Aurora while it has charges. A bonfire's
+  // XP bonus is global: it goes on every skill's XP (ExperienceStats' GlobalPercentXpGained group).
+  const lit = save?.bonfire?.active && save.bonfire.ticksLeft > 0 ? gd.raw.bonfires?.[save.bonfire.bonfire] : null;
+  for (const e of lit?.effects ?? []) {
+    if (e.stats === 'Global' && e.stat === 'PercentXpGained') for (const s of gd.skills) effects.push({ ...e, stats: 'Experience', stat: 'PercentXPGained', skill: s.id, source: lit.name });
+    else effects.push({ ...e, source: lit.name });
+  }
+  for (const a of Object.values(save?.auroras ?? {})) {
+    const aurora = a.activated && a.charges > 0 ? gd.raw.auroras?.[a.event] : null;
+    for (const e of aurora?.effects ?? []) effects.push({ ...e, source: `${aurora.name} (${a.charges} charges left)` });
+  }
+  // The bonus event Astrology turned up, once switched on and while it has charges. The Aurora's global
+  // action time bonus goes on every skill's own interval stats (the GlobalPercentActionInterval group).
+  const ev = save?.astrologyEvent;
+  const astro = ev?.activated && ev.charges > 0 ? gd.raw.astrologyEvents?.[ev.event] : null;
+  for (const e of astro?.effects ?? []) {
+    const source = `${astro.name} (${ev.charges} charges left)`;
+    if (e.stats === 'Global' && e.stat === 'PercentActionInterval') {
+      for (const [skill, stats] of Object.entries(INTERVAL_STATS)) for (const stat of stats) effects.push({ ...e, stats: 'Action', stat, skill, source });
+    } else effects.push({ ...e, source });
+  }
+  // The fishing bait selected, while you have some.
+  const bait = save?.fishingBait && (save.bank?.items?.[save.fishingBait] ?? 0) > 0 ? gd.items[save.fishingBait]?.bait : null;
+  for (const e of bait?.effects ?? []) effects.push({ ...e, source: `${gd.itemName(save.fishingBait)} (bait)` });
+  // The food selected in a skill's own food slot (sushi in Thieving's): its bonus, while you have some.
+  // Combat food is counted with the fight (playerCombatMods).
+  for (const [entity, item] of Object.entries(save?.foods ?? {})) {
+    const bonus = gd.items[item]?.foodBonus;
+    if (entity === 'Combat' || bonus?.entity !== entity || !((save.bank?.items?.[item] ?? 0) > 0)) continue;
+    for (const e of bonus.effects) effects.push({ ...e, source: `${gd.itemName(item)} (food)` });
+  }
   // Each Hunting animal's journal levels add bonuses for that animal.
   for (const [animal, j] of Object.entries(save?.huntingJournal ?? {})) {
     for (const b of gd.raw.huntingJournalBonuses ?? []) {
@@ -195,6 +226,17 @@ export function playerBonuses(gd, save) {
   }
   return effects;
 }
+
+// The interval stats each skill's GlobalPercentActionInterval bonuses land on (each *ActionStats).
+const ARTISAN_INTERVAL = ['PercentInterval'];
+const INTERVAL_STATS = {
+  Woodcutting: ARTISAN_INTERVAL, Mining: ARTISAN_INTERVAL, Thieving: ARTISAN_INTERVAL, Agility: ARTISAN_INTERVAL, Astrology: ARTISAN_INTERVAL,
+  Cooking: ARTISAN_INTERVAL, Farming: ARTISAN_INTERVAL, Firemaking: ARTISAN_INTERVAL,
+  Smithing: ARTISAN_INTERVAL, Fletching: ARTISAN_INTERVAL, Runecrafting: ARTISAN_INTERVAL, Crafting: ARTISAN_INTERVAL, Beastcrafting: ARTISAN_INTERVAL,
+  Fishing: ['PercentMinInterval', 'PercentMaxInterval'],
+  Herblore: ['PercentPreparingInterval', 'PercentHeatingInterval', 'PercentStirringInterval', 'PercentBottlingInterval'],
+  Hunting: ['PercentTrackingInterval', 'PercentTrappingInterval'],
+};
 
 // Combat bonuses on top of worn gear: chosen prayers, combat toolbelt items (potions, utilities), pets
 // and Mastery Guild ranks.
@@ -214,6 +256,27 @@ export function playerCombatMods(gd, save) {
     const pet = gd.raw.pets?.find((x) => x.id === id);
     for (const m of pet?.mods ?? []) mods.push({ ...m, source: pet.name });
   }
+  // The selected combat food's bonus, while you have some (FoodComponent.SelectFood).
+  const food = save?.foods?.Combat ?? save?.combat?.food;
+  if (food && (save?.bank?.items?.[food] ?? 0) > 0) mods.push(...combatFoodMods(gd, food));
+  return mods;
+}
+
+// A combat food's bonus as combat mods, tagged with the food so another one can replace it. Effect
+// avoidance and effect damage taken get the combat model's names; bonuses only for the Normal damage
+// type count (the only one).
+const FOOD_EFFECT_STATS = { AvoidanceChance: 'EffectAvoidanceChance', PercentDamageTaken: 'EffectDamageTaken' };
+export function combatFoodMods(gd, food) {
+  const bonus = gd.items[food]?.foodBonus;
+  if (bonus?.entity !== 'Combat') return [];
+  const effectId = (name) => Object.entries(gd.combat?.effects ?? {}).find(([, d]) => d.name === name)?.[0];
+  const mods = [];
+  for (const e of bonus.effects) {
+    const { DamageType, Effect, ...rest } = e.scope ?? {};
+    if (Object.keys(rest).length) continue;
+    if (e.stats === 'CombatEffect' && FOOD_EFFECT_STATS[e.stat]) mods.push({ stat: FOOD_EFFECT_STATS[e.stat], value: e.value, ...(Effect ? { effect: effectId(Effect) } : {}), food, source: `${gd.itemName(food)} (food)` });
+    else if ((e.stats === 'Character' || e.stats === 'CombatFood') && !Effect) mods.push({ stat: e.stat, value: e.value, food, source: `${gd.itemName(food)} (food)` });
+  }
   return mods;
 }
 
@@ -227,6 +290,10 @@ export function playerState(save, gd = null) {
     techniques: save?.agilityTechniques ? Object.fromEntries(Object.entries(save.agilityTechniques).map(([id, t]) => [id, t.level])) : null,
     // Each Hunting animal's journal level: bigger catches (more XP and products) and the journal bonuses.
     huntingJournal: save?.huntingJournal ? Object.fromEntries(Object.entries(save.huntingJournal).map(([id, j]) => [id, j.level])) : null,
+    // Your levels, for choices a rate depends on (trapless hunting needs levels in other skills).
+    levels: save?.skills ? saveLevels(save) : null,
+    // The fishing bait selected (one is used per catch while you have some).
+    fishingBait: save?.fishingBait ?? null,
     // The Astrology nodes you've unlocked, minor and major.
     astrologyNodes: save?.astrology ? Object.values(save.astrology).flatMap((c) => [...c.minor, ...c.major]) : null,
     prayers: save?.prayers ?? [],

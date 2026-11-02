@@ -5,13 +5,16 @@ import { playtestReport } from '/engine/playtest-report.js';
 import { activityKey, currentSupplies, totalXp } from '/engine/supplies.js';
 import { installChartTooltips } from '/ui/charts.js';
 import { configureIcons, duration, esc, exact, iconUrl } from '/ui/format.js';
-import { AUTOSAVE_MS, renderLivePill, renderMini, renderSaveBar, renderTabs, renderView, TABS, THEMES } from '/ui/views.js';
+import { AUTOSAVE_MS, renderLivePill, renderMini, renderSaveBar, renderTabs, renderTopAlerts, renderView, TABS, THEMES, topAlerts } from '/ui/views.js';
+import { itemCard } from '/ui/pages/item-info.js';
 
 const main = document.getElementById('view');
 const tabsEl = document.getElementById('tabs');
 const savebarEl = document.getElementById('savebar');
+const topAlertsEl = document.getElementById('top-alerts');
 const heartbeatEl = document.getElementById('heartbeat');
 const toastsEl = document.getElementById('toasts');
+const hoverEl = document.getElementById('hover-card');
 
 // localStorage can be unavailable (private windows, blocked storage); the app works without it.
 const store = {
@@ -42,7 +45,7 @@ const state = {
   goals: store.get('goals', []),
   theme: store.get('theme', 'system'),
   notify: store.get('notify', false),
-  alerts: { runningOut: true, stopped: true, planSteps: true, harvests: true, ranch: true, minutes: 15, ...store.get('alerts', {}) },
+  alerts: { runningOut: true, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, minutes: 15, ...store.get('alerts', {}) },
   useBonuses: store.get('useBonuses', true),
   // The plan on What next: the companion keeps it and moves it on with each autosave (server/route-watcher.js).
   plan: null,
@@ -65,6 +68,8 @@ const state = {
     // Kept between visits: the rarity picked and "Only ones I haven't found".
     rare: { band: 'all', missing: false, ...store.get('rare', {}) },
     away: { hours: store.get('awayHours', 8), goal: 'xp', skill: '' },
+    // How long the Overview's stock-up plans for.
+    stockHours: store.get('stockHours', 2),
   },
 };
 let gd = null;
@@ -104,6 +109,7 @@ async function syncServerAlerts(enabled = state.serverAlerts?.enabled) {
       planSteps: state.alerts.planSteps !== false,
       harvests: state.alerts.harvests !== false,
       ranch: state.alerts.ranch !== false,
+      rareFinds: state.alerts.rareFinds !== false,
       minutes: state.alerts.minutes,
       useBonuses: state.useBonuses,
       checkUpdates: state.serverAlerts.checkUpdates !== false,
@@ -165,6 +171,39 @@ async function loadHistory() {
     // keep what we had
   }
 }
+
+// Rare finds the companion has logged (server/rare-finds.js), for the Rare items page.
+async function loadFinds() {
+  if (state.route.tab !== 'rare' || !state.saveId) return false;
+  try {
+    const f = await fetchJson(`/api/finds?id=${encodeURIComponent(state.saveId)}`);
+    state.finds = { id: f.id, list: f.finds };
+  } catch {
+    // keep what we had
+  }
+  return true;
+}
+
+// "While you were away" on the Overview (pages/away-summary.js): when this page comes back into view more
+// than 30 minutes after you last had it open, what happened in between. Its history and rare finds are
+// fetched once, so the numbers don't move while you read them, and it stays until you dismiss it.
+const AWAY_MS = 30 * 60_000;
+function noteSeen() {
+  if (document.hidden || !gd) return;
+  const now = Date.now();
+  const last = store.get('lastSeen', null);
+  if (last && now - last > AWAY_MS && state.saveId) {
+    const away = { id: state.saveId, from: last, to: now, points: null, finds: [] };
+    state.awaySummary = away;
+    const q = `?id=${encodeURIComponent(away.id)}`;
+    Promise.all([fetchJson(`/api/history${q}`), fetchJson(`/api/finds${q}`).catch(() => ({ finds: [] }))])
+      .then(([h, f]) => Object.assign(away, { points: h.points, finds: f.finds }))
+      .catch(() => Object.assign(away, { points: [] }))
+      .then(render);
+  }
+  if (!last || now - last >= 10_000) store.set('lastSeen', now);
+}
+document.addEventListener('visibilitychange', () => (document.hidden ? store.set('lastSeen', Date.now()) : noteSeen()));
 
 async function loadSave() {
   const saves = state.status?.saves ?? [];
@@ -247,6 +286,13 @@ function parseRoute() {
 }
 
 // A newer release on GitHub: where to get it, until you download it or say "Not now".
+// Once, until answered: desktop notifications are off until you turn them on, and running out of
+// arrows with the page in the background is exactly what they're for.
+function notifyPrompt() {
+  if (!state.serverAlerts || state.serverAlerts.enabled || store.get('notifyAsked', false)) return '';
+  return `<div class="notice"><span>Get a desktop notification when you run out of something, nothing is training or the game stops saving? It works with this page closed.</span><span><button class="primary" data-action="notifyYes">Turn on</button> <button data-action="notifyNo">No thanks</button></span></div>`;
+}
+
 function newRelease() {
   const latest = state.status?.update?.latest;
   if (!latest || store.get('skipVersion', null) === latest.version) return '';
@@ -264,13 +310,17 @@ function render() {
   const menuOpen = document.getElementById('theme-menu')?.open;
   savebarEl.innerHTML = renderSaveBar(ctx);
   if (menuOpen) document.getElementById('theme-menu').open = true;
+  // What needs you now: stays in the top bar while it's true, with a tone for a new red one if you want it.
+  const warnings = topAlerts(ctx);
+  topAlertsEl.innerHTML = renderTopAlerts(ctx, warnings);
+  chime(warnings);
   document.title = pageTitle(ctx);
   renderMiniWindow(ctx);
   // #/mini is the pop-up fallback when the browser can't pin a window on top.
   document.body.classList.toggle('mini-mode', state.route.tab === 'mini');
   try {
     const update = state.updateReady ? '<div class="notice update-ready"><span>The companion was updated. Reload to use the new version.</span><button class="primary" data-action="reload">Reload</button></div>' : newRelease();
-    main.innerHTML = state.route.tab === 'mini' ? `<div class="mini">${renderMini(ctx)}</div>` : update + renderView(ctx);
+    main.innerHTML = state.route.tab === 'mini' ? `<div class="mini">${renderMini(ctx)}</div>` : update + notifyPrompt() + renderView(ctx);
   } catch (e) {
     console.error(e);
     main.innerHTML = `<div class="card empty"><h2>Something went wrong</h2><p>${esc(e.message)}</p></div>`;
@@ -334,7 +384,7 @@ function announceProgress(before, after) {
     const now = after.skills[s.id]?.level;
     if (!was || !now || now <= was) continue;
     const icon = iconUrl(s.icon);
-    toast(`${s.name} level ${now}!`, now - was > 1 ? `Up ${now - was} levels` : '', icon);
+    toast(`${s.name} level ${now}`, now - was > 1 ? `Up ${now - was} levels` : '', icon);
     for (const g of state.goals) {
       if (g.skill === s.id && was < g.target && now >= g.target) toast(`Goal reached: ${s.name} ${g.target}`, `${s.name} is level ${now} now.`, icon);
     }
@@ -387,7 +437,7 @@ function renderMiniWindow(ctx) {
 }
 
 // Warnings about the game: supplies running low, and progress stopping. Each fires once until it clears.
-const alerted = { low: new Set(), stuck: null, stale: false, sawSave: false };
+const alerted = { low: new Set(), stuck: null, stale: false, sawSave: false, staleShown: null };
 function checkAlerts(before, after) {
   if (!after || state.levelSource !== 'save' || (before && before.id !== after.id)) return;
   const ctx = viewContext();
@@ -418,6 +468,62 @@ function checkAlerts(before, after) {
   }
 }
 
+// A short tone when a red warning (out of something, no XP) appears that wasn't there before, if it's
+// switched on in Settings. Browsers only allow sound after a click on the page, so the player's next
+// click wakes it up.
+const heard = new Set();
+let audio = null;
+function chime(warnings) {
+  const bad = warnings.filter((w) => w.level === 'bad').map((w) => w.text);
+  const fresh = bad.some((t) => !heard.has(t));
+  heard.clear();
+  for (const t of bad) heard.add(t);
+  if (!fresh || !state.alerts.sound || !audio || audio.state !== 'running') return;
+  const tone = audio.createOscillator();
+  const gain = audio.createGain();
+  tone.frequency.value = 660;
+  gain.gain.setValueAtTime(0.15, audio.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + 0.6);
+  tone.connect(gain).connect(audio.destination);
+  tone.start();
+  tone.stop(audio.currentTime + 0.6);
+}
+document.addEventListener('click', () => {
+  if (!state.alerts.sound || !('AudioContext' in window)) return;
+  audio ??= new AudioContext();
+  if (audio.state === 'suspended') audio.resume();
+});
+
+// Point at an item anywhere and a card says what it is, without leaving the page; anything with a
+// data-tip (the ? beside a swap) shows its text the same way. Keyboard focus works too.
+function showHover(target) {
+  const link = target.closest?.('a[href^="#/lookup/item/"], [data-tip]');
+  if (!link || !main.contains(link) && !link.closest('#tabs, .topbar')) return hideHover();
+  const html = link.dataset.tip
+    ? `<p class="small">${esc(link.dataset.tip)}</p>`
+    : itemCard(viewContext(), decodeURIComponent(link.getAttribute('href').replace('#/lookup/item/', '')));
+  if (!html) return hideHover();
+  hoverEl.innerHTML = html;
+  hoverEl.hidden = false;
+  const r = link.getBoundingClientRect();
+  const w = hoverEl.offsetWidth;
+  const h = hoverEl.offsetHeight;
+  const left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+  const below = r.bottom + 8 + h < window.innerHeight;
+  hoverEl.style.left = `${left}px`;
+  hoverEl.style.top = `${below ? r.bottom + 8 : Math.max(8, r.top - h - 8)}px`;
+}
+function hideHover() {
+  hoverEl.hidden = true;
+}
+document.addEventListener('mouseover', (e) => showHover(e.target));
+document.addEventListener('focusin', (e) => showHover(e.target));
+document.addEventListener('mouseout', (e) => {
+  if (!e.relatedTarget || !e.target.closest?.('a[href^="#/lookup/item/"], [data-tip]')?.contains(e.relatedTarget)) hideHover();
+});
+window.addEventListener('scroll', hideHover, { passive: true });
+window.addEventListener('hashchange', hideHover);
+
 // Once a second: the "updated Xs ago" pill and the autosave bar under the top bar.
 function tick() {
   const pill = document.getElementById('live-pill');
@@ -429,11 +535,19 @@ function tick() {
   const live = state.levelSource === 'save' && state.live.connected && age <= 60_000;
   heartbeatEl.style.width = live ? `${Math.min(100, (age / AUTOSAVE_MS) * 100)}%` : '100%';
   heartbeatEl.parentElement.classList.toggle('stale', !live);
+  // The top bar's warnings change on their own when the game stops saving.
+  const stale = !!state.save && state.live.connected && age > 120_000;
+  if (stale !== alerted.staleShown || (stale && age % 60_000 < 1000)) {
+    alerted.staleShown = stale;
+    topAlertsEl.innerHTML = renderTopAlerts(viewContext());
+  }
   // The game was saving while this page was open, then stopped for two minutes.
   if (state.alerts.stopped && alerted.sawSave && !alerted.stale && state.live.connected && age > 120_000) {
     alerted.stale = true;
     toast('The game stopped saving', 'It may have been closed, paused or frozen.');
   }
+  // Also after the computer sleeps with this page in view.
+  noteSeen();
 }
 
 const ACTIONS = {
@@ -487,6 +601,18 @@ const ACTIONS = {
     store.set('alerts', state.alerts);
     syncServerAlerts();
   },
+  async notifyYes() {
+    store.set('notifyAsked', true);
+    await ACTIONS.serverAlerts();
+  },
+  stockHours(el) {
+    state.ui.stockHours = Number(el.dataset.value);
+    store.set('stockHours', state.ui.stockHours);
+  },
+  notifyNo() {
+    store.set('notifyAsked', true);
+    toast('No desktop notifications', 'Warnings still show at the top of the page. Turn notifications on any time in Settings.');
+  },
   async serverAlerts() {
     await syncServerAlerts(!state.serverAlerts?.enabled);
     if (state.serverAlerts?.enabled) toast('Companion notifications on', 'Alerts now arrive as desktop notifications while the companion runs, even with this page closed.');
@@ -534,6 +660,10 @@ const ACTIONS = {
   awayGoal(el) {
     state.ui.away.goal = el.dataset.value;
   },
+  // "Got it" on While you were away: hidden until the next time you're away.
+  awayDismiss() {
+    state.awaySummary = null;
+  },
   combatStyle(el) {
     state.ui.combat.style = el.dataset.value;
     state.ui.combat.showAll = false;
@@ -543,6 +673,9 @@ const ACTIONS = {
   },
   combatTarget(el) {
     state.ui.combat.target = { ...state.ui.combat.target, [el.dataset.style]: el.dataset.enemy || null };
+    // A fight shown for another style opens that style, on the Combat page when asked from elsewhere.
+    state.ui.combat.style = el.dataset.style;
+    if (el.dataset.go) location.hash = el.dataset.go;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   },
   combatShowAll() {
@@ -740,6 +873,7 @@ function connectLive() {
     announcePlan(planBefore, state.plan);
     await loadHistory();
     await loadObservations();
+    await loadFinds();
     state.live.pulse = state.save?.header.timestamp !== before?.header.timestamp;
     if (state.live.pulse) {
       alerted.sawSave = true;
@@ -804,10 +938,12 @@ async function init() {
     window.scrollTo(0, 0);
     loadHistory().then(() => ['history', 'shop'].includes(state.route.tab) && render());
     loadObservations().then(() => state.route.tab === 'accuracy' && render());
+    loadFinds().then((loaded) => loaded && render());
   });
   installChartTooltips();
   loadHistory().then(() => ['history', 'shop'].includes(state.route.tab) && render());
   loadObservations().then(() => state.route.tab === 'accuracy' && render());
+  loadFinds().then((loaded) => loaded && render());
   loadServerAlerts().then(render);
   tick();
   setInterval(tick, 1000);

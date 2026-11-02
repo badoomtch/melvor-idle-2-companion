@@ -40,7 +40,7 @@ test('level-ups and goals become one combined notification', () => {
   w.onSave('a', save({ Mining: 30 }), save({ Mining: 31 }));
   assert.equal(sent.length, 1);
   assert.match(sent[0].title, /2 updates/);
-  assert.match(sent[0].body, /Mining level 31!.*Goal reached: Mining 31/);
+  assert.match(sent[0].body, /Mining level 31.*Goal reached: Mining 31/);
   done();
 });
 

@@ -52,6 +52,23 @@ function chanceIndex(gd) {
   return sources;
 }
 
+// The rare items a source can give: `on(source)` picks the sources (a method, an enemy). Cheap once the
+// chance index is built (once per game data).
+export function rareItemsFrom(gd, on) {
+  const out = [];
+  for (const [item, list] of chanceIndex(gd)) if (gd.items[item] && list.some(on)) out.push(item);
+  return out;
+}
+
+// One item's best odds, its rarity and the source that gives them, or null if it isn't rare. Cheap like
+// rareItemsFrom.
+export function rareOdds(gd, item) {
+  const list = gd.items[item] && chanceIndex(gd).get(item);
+  if (!list?.length) return null;
+  const source = list.reduce((best, s) => (s.p > best.p ? s : best));
+  return { p: source.p, rarity: rarityOf(source.p), source };
+}
+
 /**
  * @param bestFights Map enemyId -> your best fight against it (bestFightsByEnemy); null skips enemies
  * @param owned { item: qty } everything you own (chests you could open)

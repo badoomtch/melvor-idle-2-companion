@@ -1,16 +1,18 @@
 // Rare items: everything you only get by chance, where it comes from and how long you'd need for an
 // even chance of one, split by what you can go for now.
 import { STYLES } from '/engine/combat.js';
-import { levelsAway, RARITY, rareItems } from '/engine/rare-items.js';
+import { levelsAway, RARITY, rareItems, rareOdds } from '/engine/rare-items.js';
+import { triesSoFar } from '/engine/rare-tries.js';
+import { computeRates } from '/engine/rates.js';
 import { bestFightsByEnemy } from '/engine/slayer.js';
-import { duration, esc, exact, iconImg, pct } from '/ui/format.js';
+import { ago, duration, esc, exact, iconImg, pct } from '/ui/format.js';
 import { combatRecommendation } from './combat.js';
 import { currentMethodKey } from './route-ui.js';
 import { card, enc, itemLink, memo, methodLink, pageHead, saveKey, skillName } from './shared.js';
 
 // What you're doing in the game, to mark the items it can give: the skilling action, or the enemy you're
 // fighting (every enemy in it for an area or dungeon). The save names a fight "Combat - Treant".
-function doing(ctx) {
+export function doing(ctx) {
   const { gd } = ctx;
   const method = currentMethodKey(ctx);
   const enemies = new Set();
@@ -66,7 +68,29 @@ function equipNote(ctx, list) {
 function itemHead(ctx, r) {
   const status = `${r.on ? ` <span class="pill good">You're on this</span>` : ''}${r.found === true ? ' <span class="pill good">Found</span>' : r.found === false ? ' <span class="pill">Not found yet</span>' : ''}`;
   const have = r.have > 0 ? ` <span class="muted small">you have ${exact(r.have)}</span>` : '';
-  return `${itemLink(ctx, r.item)} <span class="pill${r.rarity.id === 'legendary' ? ' accent' : ''}" title="${esc(r.rarity.label)}">${esc(r.rarity.name)}</span>${status}${have}`;
+  return `${itemLink(ctx, r.item)} ${rarityPill(r.rarity)}${status}${have}`;
+}
+
+const rarityPill = (b) => `<span class="pill${b.id === 'legendary' ? ' accent' : ''}" title="${esc(b.label)}">${esc(b.name)}</span>`;
+
+// Rare finds the companion logged (server/rare-finds.js), newest first: the item, how rare it is, when,
+// and what you were doing. Also on the Overview's "While you were away".
+export function findList(ctx, finds) {
+  const rows = [...finds].sort((a, b) => b.at - a.at).map((f) => {
+    const band = rareOdds(ctx.gd, f.item)?.rarity;
+    const count = f.count > 1 ? ` <span class="muted small">×${exact(f.count)}</span>` : '';
+    return `<li><span>${itemLink(ctx, f.item)}${count}${band ? ` ${rarityPill(band)}` : ''}${f.activity ? `<span class="sub muted small">${esc(f.activity)}</span>` : ''}</span><span class="num small muted">${esc(ago(f.at))}</span></li>`;
+  });
+  return `<ul class="list-plain">${rows.join('')}</ul>`;
+}
+
+// Your last two finds, under the boxes of what you've found so far. Nothing until there's one. (The
+// companion keeps only the latest 200, so the log stays small however long you play.)
+const RECENT_FINDS = 2;
+function recentFinds(ctx) {
+  const log = ctx.state.finds;
+  if (!log?.list.length || log.id !== ctx.save?.id) return '';
+  return card('Recent finds', findList(ctx, log.list.slice(-RECENT_FINDS)), ' style="margin-bottom:12px"');
 }
 
 // The other places it comes from, briefly.
@@ -92,13 +116,39 @@ function statBoxes(all, ui, hasFound) {
   return `<div class="grid stats rare-stats" role="group" aria-label="Found so far by rarity: pick one to list only those">${box('all', hasFound ? 'Found so far' : 'Rare items', all, 'every rarity')}${RARITY.map((b) => box(b.id, b.name, all.filter((r) => r.rarity.id === b.id), b.label)).join('')}</div>`;
 }
 
+// What you've already put in at this source, from your save's statistics, and how many players would
+// have one by now: so a long wait reads as bad luck, not a wrong estimate.
+function triesLine(ctx, r, b, rates) {
+  if (r.found || !ctx.save || ctx.state.levelSource !== 'save') return '';
+  const t = triesSoFar(ctx.gd, ctx.save, r.item, b, rates);
+  if (!t) return '';
+  const hours = t.hours ?? (b.type === 'enemy' && b.kills && b.hours > 0 ? t.tries / (b.kills / b.hours) : null);
+  const tried = `So far: ${exact(t.tries)} ${esc(t.unit)}${t.attempts && t.attempts !== t.tries ? ` (${exact(t.attempts)} tries)` : ''}${hours ? `, about ${duration(hours)}` : ''}.`;
+  const luck = t.chance >= 0.5
+    ? ` ${pct(t.chance, 0)} of players would have one by now. The odds don't build up: every try is as likely as the first.`
+    : ` About ${pct(t.chance, 0)} of players would have one by now.`;
+  return `<span class="sub small muted">${tried}${luck}</span>`;
+}
+
+// The odds at your level. Thieving loot only rolls on a success, so it's per successful steal there,
+// the same the "so far" line counts.
+function oddsNow(b, pNow, rates) {
+  if (!(pNow > 0)) return `${odds(b.p)} ${per(b)}`;
+  const s = rates?.successChance;
+  if (b.method?.kind === 'thieving' && s > 0 && s < 1) return `${odds(Math.min(1, pNow / s))} per successful steal at your level (you succeed ${pct(s, 0)} of the time)`;
+  return `${odds(pNow)} ${per(b)} at your level`;
+}
+
 function nowRow(ctx, r) {
   // The source you're on, when it isn't the quickest: that's the one you're working on.
   const b = r.onSource?.now ? r.onSource : r.best;
+  // The odds at your level, the same the time is worked out with (the rarity is from the unlock level).
+  const rates = b.type === 'method' ? computeRates(ctx.gd, b.method, ctx.gd.levelOf(ctx.levels, b.method.skill)) : null;
+  const pNow = rates?.cyclesPerHour ? rates.chancePerCycle?.[r.item] ?? Math.min(1, (rates.outputs.find((o) => o.item === r.item)?.perHour ?? 0) / rates.cyclesPerHour) : 0;
   const time = b.hours === 0
     ? `<span class="num">${pct(b.chanceFromOwned, b.chanceFromOwned < 0.1 ? 1 : 0)}<span class="sub muted small">from yours</span></span>`
     : `<span class="num">${duration(b.hours)}<span class="sub muted small">${b.kills ? `${exact(b.kills)} kills` : 'for a 50% chance'}</span></span>`;
-  return `${li(r)}<span>${itemHead(ctx, r)}<span class="sub small">${sourceText(ctx, b)} · ${odds(b.p)} ${per(b)}</span>${b.equip?.length ? equipNote(ctx, b.equip) : ''}${others(ctx, r, b)}</span>${time}</li>`;
+  return `${li(r)}<span>${itemHead(ctx, r)}<span class="sub small">${sourceText(ctx, b)} · ${oddsNow(b, pNow, rates)}</span>${triesLine(ctx, r, b, rates)}${b.equip?.length ? equipNote(ctx, b.equip) : ''}${others(ctx, r, b)}</span>${time}</li>`;
 }
 
 function soonRow(ctx, r) {
@@ -150,7 +200,7 @@ export function rarePage(ctx) {
   const band = RARITY.find((b) => b.id === ui.band);
   const missing = hasFound ? `<label class="small" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" data-action="rareMissing"${ui.missing ? ' checked' : ''}> Only ones I haven't found</label>` : '';
   const showing = `<span class="small muted">Listing ${exact(shown.length)}${band ? ` ${esc(band.name.toLowerCase())}` : ''} item${shown.length === 1 ? '' : 's'}. Pick a box above to list one rarity.</span>`;
-  const controls = `${statBoxes(all, ui, hasFound)}<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px">${missing}${showing}</div>`;
+  const controls = `${statBoxes(all, ui, hasFound)}${recentFinds(ctx)}<div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px">${missing}${showing}</div>`;
 
   const head = pageHead('Rare items', 'Everything you only get by chance: how rare it is, where it comes from, and how long you\'d need for an even chance of one at your levels. Rarity is the best odds any source gives.');
   const basis = ctx.save ? '' : '<p class="notice">Load a save to time enemy drops with your gear and to count the chests you already have.</p>';

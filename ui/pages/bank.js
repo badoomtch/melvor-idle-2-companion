@@ -53,9 +53,9 @@ export function bank(ctx) {
     <h2>Worth more after crafting</h2>
     <p class="small muted">Recipes you can make now from your stock, where the product sells for more than its materials. Each line uses your whole stock, so lines that need the same materials are alternatives, not a to-do list.</p>
     ${table(['Craft', '#Each', '#Total', '#Time'], processing, 'Nothing in your bank gains value from crafting at your levels.')}
-    <h2>Safe to sell</h2>
-    <p class="small muted">Nothing in the game uses these, and they aren't food, gear or tools.</p>
-    ${table(['Item', '#Qty', '#Value'], sellable, 'Nothing obviously safe to sell.')}
+    <h2>Nothing uses these</h2>
+    <p class="small muted">Nothing in the game data asks for these: no recipe, quest, upgrade, shop, toolbelt or ranch, and you can't wear, eat or open them. Rare finds are left out, since you can't easily get another. A game update could still add a use, so only sell what you're sure about.</p>
+    ${table(['Item', '#Qty', '#Value'], sellable, 'Everything in your bank has a use.')}
     <h2>Everything</h2>
     <div class="form-row"><input id="bank-filter" type="search" placeholder="Filter items…" value="${esc(state.ui.bankFilter)}" data-bind="bankFilter" aria-label="Filter items"></div>
     ${table(['Item', '#Qty', '#Each', '#Total'], rows)}`;

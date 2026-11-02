@@ -416,7 +416,8 @@ const primaryProducts = (method) => new Set([method.product?.item, ...(method.pr
 /**
  * Expected hourly rates for a method at a given level of its skill, with the player's bonuses
  * (gd.playerBonuses, set from the save) unless options.bonuses says otherwise ([] for base rates).
- * Damage taken (thieving) is paid for with food: options.food, else gd.preferredFood, else the cheapest food per HP.
+ * Damage taken (thieving) is paid for with food: options.food, else the food selected in that skill's slot in
+ * the save, else gd.preferredFood, else the cheapest food per HP.
  */
 // Toolbelt items used up as you work (potions, Blackstone): one each time what uses them happens, per
 // hit, catch, craft step and so on (ToolbeltCapability.ConsumesOn), less any toolbelt preservation for
@@ -620,7 +621,8 @@ function baseRates(gd, method, level, options) {
   const gpCurrency = currencies[GP] ?? 0;
   const outputValue = outputs.reduce((s, o) => s + o.value, 0) + Math.max(0, gpCurrency);
   const hpLossPerHour = acc.hpLoss * perHour;
-  const foodItem = options.food ?? gd.preferredFood ?? gd.defaultFood;
+  // The food selected for this skill in the game, else your pick in the companion, else the cheapest per HP.
+  const foodItem = options.food ?? gd.player?.foods?.[method.skill] ?? gd.preferredFood ?? gd.defaultFood;
   const heal = gd.items[foodItem]?.heal ?? 0;
   const foodPerHour = hpLossPerHour > 0 && heal > 0 ? hpLossPerHour / heal : 0;
   const food = hpLossPerHour > 0 ? { item: foodItem, perHour: foodPerHour, value: foodPerHour * gd.itemValue(foodItem) } : null;

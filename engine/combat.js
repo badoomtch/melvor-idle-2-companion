@@ -194,19 +194,126 @@ export function hitsToKill(hp, pre, post, breakAt = Infinity) {
   return { hits, armoured: b > 0 ? Math.min(1, -Math.expm1(hits * logStay) / b / hits) : 1 };
 }
 
-// Chance the kill comes on each of your turns (index 1, 2, ...), worked out on a grid of its HP like
-// hitsToKill: a turn is one of your attacks, picked by chance, each of its hits landing or not.
-// @param attacks [{ chance, hits: [{ count, land, spread }] }], spread being one landed hit's { d, p }
+// Chance the kill comes on each of your turns (index 1, 2, ...) and when, on average, it comes then:
+// worked out on a grid of its HP like hitsToKill, hit by hit (each landing or not, the kill on the
+// first that takes the last of its HP), a turn being one of your attacks picked by chance. A turn that
+// doesn't kill ends at its last hit and the next starts an interval later.
+// @param attacks [{ chance, hits: [{ count, interval, land, spread }] }], spread null for a hit that
+//   does no damage (a boomerang coming back)
 const TURN_CELLS = 32;
-function killTurnChances(hp, attacks, maxTurns = 40) {
+function killTurnChances(hp, attacks, interval, maxTurns = 40) {
   const n = Math.max(1, Math.min(TURN_CELLS, Math.ceil(hp)));
   const size = hp / n;
+  const seqs = attacks.map((a) => {
+    const hits = [];
+    let at = 0;
+    a.hits.forEach((h, i) => {
+      const q = new Float64Array(n + 1);
+      if (h.spread) {
+        const cells = cellsOf(h.spread, size, n);
+        for (let k = 0; k <= n; k++) q[k] = cells[k] * h.land;
+      }
+      q[0] += h.spread ? 1 - h.land : 1;
+      for (let c = 0; c < h.count; c++) {
+        if (i > 0 || c > 0) at += h.interval;
+        hits.push({ at, q });
+      }
+    });
+    return { chance: a.chance, hits, length: interval + at };
+  });
+  const chances = [0];
+  const times = [0];
+  // One hit a turn, whatever the attack: a turn at a time, the kill at the end of its turn.
+  if (seqs.every((sq) => sq.hits.length === 1)) {
+    const q = new Float64Array(n + 1);
+    for (const sq of seqs) for (let d = 0; d <= n; d++) q[d] += sq.chance * sq.hits[0].q[d];
+    let live = new Float64Array(n + 1);
+    live[n] = 1;
+    let rest = 1;
+    for (let k = 1; k <= maxTurns && rest > 1e-6; k++) {
+      const next = new Float64Array(n + 1);
+      let killed = 0;
+      for (let c = 1; c <= n; c++) {
+        const m = live[c];
+        if (!m) continue;
+        for (let d = 0; d <= n; d++) if (q[d]) (d >= c ? (killed += m * q[d]) : (next[c - d] += m * q[d]));
+      }
+      chances.push(killed);
+      times.push(k * interval);
+      live = next;
+      rest -= killed;
+    }
+    return rest > 1e-6 ? null : { chances, times };
+  }
+  let alive = new Float64Array(n + 1);
+  let elapsed = new Float64Array(n + 1); // chance x time since the fight started, by HP left
+  alive[n] = 1;
+  let left = 1;
+  for (let k = 1; k <= maxTurns && left > 1e-6; k++) {
+    const nextAlive = new Float64Array(n + 1);
+    const nextElapsed = new Float64Array(n + 1);
+    let killed = 0;
+    let killedAt = 0;
+    for (const sq of seqs) {
+      let cur = alive.map((x) => x * sq.chance);
+      let curT = elapsed.map((x) => x * sq.chance);
+      for (const { at, q } of sq.hits) {
+        const nc = new Float64Array(n + 1);
+        const nt = new Float64Array(n + 1);
+        for (let c = 1; c <= n; c++) {
+          const m = cur[c];
+          if (!m) continue;
+          for (let d = 0; d <= n; d++) {
+            if (!q[d]) continue;
+            if (d >= c) {
+              killed += m * q[d];
+              killedAt += (curT[c] + m * (interval + at)) * q[d];
+            } else {
+              nc[c - d] += m * q[d];
+              nt[c - d] += curT[c] * q[d];
+            }
+          }
+        }
+        cur = nc;
+        curT = nt;
+      }
+      for (let c = 1; c <= n; c++) {
+        nextAlive[c] += cur[c];
+        nextElapsed[c] += curT[c] + cur[c] * sq.length;
+      }
+    }
+    chances.push(killed);
+    times.push(killed > 0 ? killedAt / killed : 0);
+    alive = nextAlive;
+    elapsed = nextElapsed;
+    left -= killed;
+  }
+  if (left > 1e-6) return null;
+  return { chances, times };
+}
+
+/**
+ * Turns to kill something that heals itself between your turns but never past full (CharacterHealth.
+ * Heal), as a chain over the damage you've done that it hasn't healed back, on a grid of its HP. Each
+ * turn it heals `heal` (taking it no further than full: healing then is lost), then your turn does
+ * its damage; the kill is when what's left reaches its HP. Solved exactly for the expected turns.
+ * @param attacks your attacks as for killTurnChances; `scale` multiplies their damage (to add damage
+ *   over time and the like at the same rate)
+ * @param heal what it heals a turn, or how that varies from turn to turn: [{ h, p }] (less than 0 when
+ *   your damage over time between turns is more)
+ */
+const HEAL_CELLS = 48;
+export function healedTurnsToKill(hp, attacks, heal, scale = 1) {
+  const n = Math.max(2, Math.min(HEAL_CELLS, Math.ceil(hp)));
+  const size = hp / n;
+  // One turn's damage in cells (n or more: a kill from anywhere), every hit convolved.
   const turn = new Float64Array(n + 1);
   for (const a of attacks) {
     let dist = new Float64Array(n + 1);
     dist[0] = 1;
     for (const h of a.hits) {
-      const one = cellsOf(h.spread, size, n).map((x) => x * h.land);
+      if (!h.spread) continue;
+      const one = cellsOf(h.spread.map((x) => ({ d: x.d * scale, p: x.p })), size, n).map((x) => x * h.land);
       one[0] += 1 - h.land;
       for (let c = 0; c < h.count; c++) {
         const next = new Float64Array(n + 1);
@@ -216,24 +323,119 @@ function killTurnChances(hp, attacks, maxTurns = 40) {
     }
     for (let i = 0; i <= n; i++) turn[i] += a.chance * dist[i];
   }
-  const out = [0];
-  let alive = new Float64Array(n + 1);
-  alive[n] = 1;
-  let left = 1;
-  for (let k = 1; k <= maxTurns && left > 1e-6; k++) {
-    const next = new Float64Array(n + 1);
-    let killed = 0;
-    for (let c = 1; c <= n; c++) {
-      const m = alive[c];
-      if (!m) continue;
-      for (let j = 0; j <= n; j++) if (turn[j]) (j >= c ? (killed += m * turn[j]) : (next[c - j] += m * turn[j]));
-    }
-    out.push(killed);
-    alive = next;
-    left -= killed;
+  // What it heals a turn, in cells; a fraction of a cell is split between the cells either side.
+  const heals = [];
+  for (const { h, p } of Array.isArray(heal) ? heal : [{ h: heal, p: 1 }]) {
+    const lo = Math.floor(h / size);
+    const f = h / size - lo;
+    heals.push([lo, p * (1 - f)], [lo + 1, p * f]);
   }
-  if (left > 1e-6) return null;
-  return out;
+  // (I - P) E = 1 over the states 0 .. n - 1 (damage left unhealed, in cells).
+  const A = Array.from({ length: n }, (_, i) => {
+    const row = new Float64Array(n + 1);
+    row[i] = 1;
+    row[n] = 1;
+    for (const [down, w] of heals) {
+      if (!(w > 0)) continue;
+      const after = Math.max(0, i - down);
+      for (let k = 0; after + k < n; k++) row[after + k] -= w * turn[k];
+    }
+    return row;
+  });
+  for (let c = 0; c < n; c++) {
+    let pivot = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(A[r][c]) > Math.abs(A[pivot][c])) pivot = r;
+    [A[c], A[pivot]] = [A[pivot], A[c]];
+    if (Math.abs(A[c][c]) < 1e-12) return Infinity;
+    for (let r = 0; r < n; r++) {
+      if (r === c || !A[r][c]) continue;
+      const f = A[r][c] / A[c][c];
+      for (let k = c; k <= n; k++) A[r][k] -= f * A[c][k];
+    }
+  }
+  const turns = A[0][n] / A[0][0];
+  return turns > 0 && Number.isFinite(turns) ? turns : Infinity;
+}
+
+/**
+ * Expected time from the start of a fight to the kill when your turns take different times (a
+ * special attack's later hits come after a wait): hit by hit, each landing or not, the kill on the
+ * first that takes the last of its HP; a turn that doesn't kill ends at its last hit and the next one
+ * starts an interval later. Worked out on a grid of its HP from the bottom up: for each HP left, the
+ * time from each hit of each attack to the kill, a + b X where X is the time from a new turn. With
+ * armour that breaks, twice: once it's broken (`post`), then before (`pre`, each roll marked `b` if it
+ * breaks it), where a hit that breaks it carries on from the same place in the first.
+ * @param attacks [{ chance, hits: [{ count, interval, land, spread, pre?, post? }] }], spread null for
+ *   a hit that does no damage (a boomerang coming back)
+ */
+function killTime(hp, attacks, interval) {
+  const n = Math.max(1, Math.min(KILL_CELLS, Math.ceil(hp)));
+  const size = hp / n;
+  const cellsWith = (spread, land) => {
+    const q = new Float64Array(n + 1);
+    if (spread) {
+      const cells = cellsOf(spread, size, n);
+      for (let k = 0; k <= n; k++) q[k] = cells[k] * land;
+    }
+    return q;
+  };
+  const armoured = attacks.some((a) => a.hits.some((h) => h.pre));
+  // One layer: for each hit, `q` (stays in this layer) and `to` (moves to `other`, already worked out).
+  const layer = (hitOf, other) => {
+    const seqs = attacks.map((a) => {
+      const hits = [];
+      a.hits.forEach((h, i) => {
+        const { q, to } = hitOf(h);
+        for (let c = 0; c < h.count; c++) hits.push({ wait: i > 0 || c > 0 ? h.interval : 0, q, to });
+      });
+      return { chance: a.chance, hits, at: hits.map(() => new Float64Array(n + 1)) };
+    });
+    const X = new Float64Array(n + 1);
+    for (let i = 1; i <= n; i++) {
+      let alpha = 0;
+      let beta = 0;
+      const forms = seqs.map((sq, si) => {
+        const out = [];
+        let next = null; // the hit after this one, as a + b X
+        for (let j = sq.hits.length - 1; j >= 0; j--) {
+          const { q, to } = sq.hits[j];
+          const last = j === sq.hits.length - 1;
+          const wait = last ? interval : sq.hits[j + 1].wait;
+          let a = 0;
+          let b = 0;
+          for (let k = 0; k < i; k++) {
+            if (q[k]) {
+              if (k === 0) {
+                a += q[0] * (wait + (last ? 0 : next.a));
+                b += q[0] * (last ? 1 : next.b);
+              } else {
+                a += q[k] * (wait + (last ? X[i - k] : sq.at[j + 1][i - k]));
+              }
+            }
+            if (to?.[k]) a += to[k] * (wait + (last ? other.X[i - k] : other.seqs[si].at[j + 1][i - k]));
+          }
+          next = { a, b };
+          out[j] = next;
+        }
+        alpha += sq.chance * out[0].a;
+        beta += sq.chance * out[0].b;
+        return out;
+      });
+      X[i] = beta < 1 - 1e-12 ? alpha / (1 - beta) : Infinity;
+      seqs.forEach((sq, si) => forms[si].forEach((f, j) => (sq.at[j][i] = f.a + f.b * X[i])));
+    }
+    return { X, seqs };
+  };
+  const missOr = (q, h) => {
+    q[0] += h.spread ? 1 - h.land : 1;
+    return q;
+  };
+  const broken = layer((h) => ({ q: missOr(cellsWith(h.post ?? h.spread, h.land), h) }), null);
+  if (!armoured) return interval + broken.X[n];
+  const before = layer((h) => (h.pre
+    ? { q: missOr(cellsWith(h.pre.filter((x) => !x.b), h.land), h), to: cellsWith(h.pre.filter((x) => x.b), h.land) }
+    : { q: missOr(cellsWith(h.spread, h.land), h) }), broken);
+  return interval + before.X[n];
 }
 
 // The same for a long fight: about normal, `mean` turns with variance mean x cv2 (a renewal count).
@@ -510,15 +712,6 @@ const triangleFor = (gd, playerStyle, enemyStyle) => gd.combat.triangle.find((t)
 // A fight is risky when it can kill you within this many hours of leaving it running, food or not.
 export const RISKY_HOURS = 8;
 
-// Average stacks over a fight when one is added each time (up to max) and N happen per fight.
-function averageStacks(perFight, max) {
-  if (!(perFight > 0) || !(max > 0)) return 0;
-  const n = Math.max(1, Math.round(perFight));
-  let sum = 0;
-  for (let k = 0; k < n; k++) sum += Math.min(k, max);
-  return sum / n;
-}
-
 // P(one damage roll uniform on [min, max], then x * factor - armour (at least 1), reaches `hp`).
 function chanceAtLeast(min, max, factor, armour, hp) {
   if (max < min) return 0;
@@ -665,12 +858,13 @@ export function autoEatChain({ maxHp, threshold, limit = maxHp, heal, rolls, dra
 
 // Damage of one run of a damage-over-time effect (ActiveDamageOverTimeEffect): each proc deals every
 // stack's damage at once; triggers while it runs add a stack (up to its max) but don't make it last
-// longer. Triggers come `rate` per second.
-function dotRunDamage(d, rate, tick) {
+// longer. Triggers come `rate` per second, and `burst` more at the start (the rest of the burst of
+// hits that started it).
+function dotRunDamage(d, rate, tick, burst = 0) {
   const max = Math.max(1, d.maxStacks ?? 1);
   let sum = 0;
   for (let k = 1; k <= d.procs; k++) {
-    const mean = (rate * k * d.interval) / 1000;
+    const mean = burst + (rate * k * d.interval) / 1000;
     let pmf = Math.exp(-mean);
     let below = 0;
     for (let s = 1; s < max; s++) {
@@ -688,10 +882,114 @@ function dotRunDamage(d, rate, tick) {
 // so it starts fewer runs); `perSec` is then that side's turns per second, otherwise triggers per second.
 const triggerRates = (perSec, x) => ({ stackRate: perSec * (x ? x.perTurn : 1), startRate: perSec * (x ? x.anyPerTurn : 1) });
 
-// Damage per second of a damage-over-time effect: runs one after another, each waiting for the next start.
-function dotDps(d, tick, stackRate, startRate) {
-  if (!(stackRate > 0) || !(startRate > 0)) return 0;
-  return dotRunDamage(d, stackRate, tick) / ((d.procs * d.interval) / 1000 + 1 / startRate);
+// Stuns in `span` ms that start at random, `rate` per ms, each keeping the next off for `lockout`: the
+// k-th lands by the end if k random waits fit in what the k - 1 lockouts before it leave. Over many,
+// one each lockout and wait.
+function stunsIn(span, rate, lockout) {
+  if (!(span > 0) || !(rate > 0)) return 0;
+  if (span * rate > 50 * (1 + rate * lockout)) return (span * rate + rate * lockout) / (1 + rate * lockout);
+  let total = 0;
+  for (let k = 1; k < 500; k++) {
+    const x = (span - (k - 1) * lockout) * rate;
+    if (!(x > 0)) break;
+    let term = Math.exp(-x);
+    let sum = term;
+    for (let i = 1; i < k; i++) {
+      term *= x / i;
+      sum += term;
+    }
+    total += 1 - sum;
+    if (1 - sum < 1e-9) break;
+  }
+  return total;
+}
+
+// Seconds from one run of a damage-over-time effect starting to the next, when starts come at random:
+// the run, then the wait for the next start.
+const dotCycleSec = (d, startRate) => (d.procs * d.interval) / 1000 + 1 / startRate;
+
+/**
+ * The same when starts come at one side's hits: a run put on at a hit lasts its procs, and the next
+ * starts at the first hit after it ends that sets it off (Silt Burns runs 4s; with turns 2.2s apart, the
+ * next chance is 0.4s after it ends, not a random wait; Shambling Whips' four hits come in a burst).
+ * Turn by turn after the hit that started it, each an attack picked by chance with its hits at their
+ * times, until every way is past the end of the run; from a turn's start after that, the wait is the
+ * same each time.
+ * @param turns [{ chance, hits: [{ at, c }], length }]: `at` ms after the turn's first hit, `c` the
+ *   chance that hit starts a run, `length` from the first hit to the next turn's
+ * @returns { sec, starts, burst }: seconds a cycle, the share of runs each of the turns starts, and
+ *   how many more times the rest of the turn that starts one sets it off, on average
+ */
+function dotCycleAtHits(d, turns) {
+  const runMs = d.procs * d.interval;
+  // From a turn's first hit, with the run over: time to the next start.
+  let ahead = 0;
+  let none = 0;
+  for (const t of turns) {
+    let left = 1;
+    for (const h of t.hits) {
+      ahead += t.chance * left * h.c * h.at;
+      left *= 1 - h.c;
+    }
+    ahead += t.chance * left * t.length;
+    none += t.chance * left;
+  }
+  if (!(none < 1 - 1e-9)) return { sec: Infinity, starts: turns.map(() => 0), burst: 0 };
+  const fresh = ahead / (1 - none);
+  let starts = 0;
+  let waits = 0;
+  let bursts = 0;
+  const by = turns.map(() => 0);
+  turns.forEach((t0, i) => {
+    let before = 1;
+    t0.hits.forEach((h0, k) => {
+      const w = t0.chance * before * h0.c; // the first start in a turn
+      before *= 1 - h0.c;
+      if (!(w > 0)) return;
+      // The rest of its turn, then turn by turn; `alive`: no start yet since the run ended.
+      let wait = 0;
+      let alive = 1;
+      for (const h of t0.hits.slice(k + 1)) {
+        const at = h.at - h0.at;
+        if (at < runMs - 1e-9) continue;
+        wait += alive * h.c * (at - runMs);
+        alive *= 1 - h.c;
+      }
+      let next = new Map([[t0.length - h0.at, alive]]);
+      for (let guard = 0; next.size && guard < 200; guard++) {
+        const now = next;
+        next = new Map();
+        for (const [at, mass] of now) {
+          if (at >= runMs - 1e-9) {
+            wait += mass * (at - runMs + fresh);
+            continue;
+          }
+          for (const t of turns) {
+            let m = mass * t.chance;
+            for (const h of t.hits) {
+              const when = at + h.at;
+              if (when < runMs - 1e-9) continue;
+              wait += m * h.c * (when - runMs);
+              m *= 1 - h.c;
+            }
+            const key = Math.round(at + t.length);
+            next.set(key, (next.get(key) ?? 0) + m);
+          }
+        }
+      }
+      starts += w;
+      waits += w * wait;
+      by[i] += w;
+      bursts += w * t0.hits.slice(k + 1).reduce((t, h) => t + h.c, 0);
+    });
+  });
+  return { sec: starts > 0 ? (runMs + waits / starts) / 1000 : Infinity, starts: by.map((x) => (starts > 0 ? x / starts : 0)), burst: starts > 0 ? bursts / starts : 0 };
+}
+
+// Damage per second of a damage-over-time effect: runs one after another, `cycleSec` apart.
+function dotDps(d, tick, stackRate, cycleSec, burst = 0) {
+  if (!(stackRate > 0) || !(cycleSec > 0) || !Number.isFinite(cycleSec)) return 0;
+  return dotRunDamage(d, stackRate, tick, burst) / cycleSec;
 }
 
 // XP bonuses for one skill (Mastery Guild ranks and the like), as a share (ExperienceStats).
@@ -740,12 +1038,12 @@ function stateMix(states) {
 }
 const modSum = (states, stat) => states.reduce((s, x) => s + x.mods.reduce((t, m) => t + (m.stat === stat ? m.value : 0), 0), 0);
 // Stats of the side an effect is on that matter when the other side hits it.
-const DEFENCE_STATS = new Set(['PercentEvasionRating', 'FlatEvasionRating', 'FlatProtectionRating', 'PercentDamageTaken', 'PercentDamageTakenFromAttacks', 'FlatCombatStatValue', 'PercentResistance', 'PercentAttackReflect']);
+const DEFENCE_STATS = new Set(['PercentEvasionRating', 'FlatEvasionRating', 'FlatProtectionRating', 'PercentProtectionRating', 'PercentDamageTaken', 'PercentDamageTakenFromAttacks', 'FlatCombatStatValue', 'PercentResistance', 'PercentAttackReflect']);
 // Share of the time an effect is up when it lasts `ms` and lands `rate` times per ms while it's down
 // (one that's up isn't refreshed: ConfiguredTurnCountingEffect.ReapplyEffect).
 const uptimeOf = (rate, ms) => (rate > 0 && ms > 0 ? (rate * ms) / (1 + rate * ms) : 0);
 // The stats effects that last some turns change, as far as the model goes.
-const STATE_STATS = new Set(['PercentAccuracyRating', 'PercentEvasionRating', 'FlatEvasionRating', 'PercentAttackInterval', 'FlatPowerRating', 'FlatProtectionRating', 'PercentMaxHit', 'PercentDamageTaken', 'PercentAttackReflect', 'PercentResistance', 'PercentDamageTakenFromAttacks', 'FlatCombatStatValue']);
+const STATE_STATS = new Set(['PercentAccuracyRating', 'PercentEvasionRating', 'FlatEvasionRating', 'PercentAttackInterval', 'FlatPowerRating', 'FlatProtectionRating', 'PercentMaxHit', 'PercentDamageTaken', 'PercentAttackReflect', 'PercentResistance', 'PercentDamageTakenFromAttacks', 'FlatCombatStatValue', 'PercentProtectionRating', 'MinHitBasedOnMaxHit']);
 
 // How often a side's attacks apply each of their effects, per turn (CharacterComponent.PerformAttack):
 // pre-hit effects roll before every hit, on-hit ones on every hit that lands, first-hit ones once. `perTurn` counts every
@@ -802,7 +1100,13 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
   const passiveFx = (who) => (passive?.effectMods ?? []).filter((m) => m.who === who);
   const playerFx = fxOf([...(p.effectMods ?? []), ...passiveFx('player')]);
   const enemyFx = fxOf([...(p.enemyMods ?? []).filter((m) => m.stat === 'EffectAvoidanceChance' || m.stat === 'EffectDamageTaken' || m.stat === 'EffectLifesteal'), ...passiveFx('enemy')]);
-  const avoids = (fx, effect) => clamp(fx('EffectAvoidanceChance', effect), 0, 1);
+  // Avoidance from effects up some of the time (Poison Weak: 30% less against Poison), each pass's own.
+  let avoidStates = [];
+  const avoids = (fx, effect) => {
+    const base = clamp(fx('EffectAvoidanceChance', effect), 0, 1);
+    const who = fx === playerFx ? 'player' : 'enemy';
+    return avoidStates.filter((st) => st.who === who).reduce((a, st) => a + st.uptime * st.mods.reduce((t, m) => t + (m.stat === 'EffectAvoidanceChance' && m.effect === effect ? clamp(base + m.value, 0, 1) - base : 0), 0), base);
+  };
   const effectDef = (id) => gd.combat.effects?.[id] ?? null;
   const pAttacks = p.attacks?.length ? p.attacks : [{ ...NORMAL_ATTACK, chance: 1 }];
 
@@ -836,11 +1140,11 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     };
   };
 
-  // One pass of the fight. `adj`: the enemy's accuracy, evasion and attack speed from its stacking
-  // passives (averaged over the fight), effects up some of the time (`states`, from the pass before)
-  // and the share of time you aren't stunned.
+  // One pass of the fight. `adj`: effects up some of the time and stacks averaged over a fight
+  // (`states`, from the pass before), the share of time you aren't stunned and its healing.
   const run = (adj) => {
     const states = adj.states ?? [];
+    avoidStates = states;
     const of = (who) => states.filter((s) => s.who === who);
     const lin = (who, stat) => of(who).reduce((sum, s) => sum + s.uptime * modSum([s], stat), 0);
     const touching = (who, stats) => of(who).filter((s) => s.mods.some((m) => stats.includes(m.stat)));
@@ -852,36 +1156,51 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const prayerCost = active.reduce((sum, x) => sum + x.cost, 0);
     const elemBonus = gd.combat.elements.find((x) => x.player === p.element && x.enemy === e.element)?.percentMaxHit ?? 0;
     // Your hit chance against its evasion, with whatever's up on either side.
-    const playerHit = immune ? 0 : overStates([...touching('player', ACCURACY), ...touching('enemy', EVASION_STATS)], (up) => {
+    const hitStates = [...touching('player', ACCURACY), ...touching('enemy', EVASION_STATS)];
+    const hitWith = (up) => {
       const its = side(up, 'enemy');
-      const evasion = Math.max(1, Math.trunc(e.evasion(p.stance) * (1 + adj.evasion + onEnemy('PercentEvasionRating') + modSum(its, 'PercentEvasionRating')) + modSum(its, 'FlatEvasionRating')));
+      const evasion = Math.max(1, Math.trunc(e.evasion(p.stance) * (1 + onEnemy('PercentEvasionRating') + modSum(its, 'PercentEvasionRating')) + modSum(its, 'FlatEvasionRating')));
       const extra = modSum(side(up, 'player'), 'PercentAccuracyRating');
       const accuracy = extra && p.accuracyWith ? p.accuracyWith(extra) : p.accuracy;
       return clamp(hitChance(accuracy, evasion) + (p.hitChanceBonus ?? 0), 0, 1);
-    });
-    // Its resistance with whatever's up (mixed, not averaged: Shatter takes 500 protection, and
-    // resistance can't go below 0).
-    const enemyRes = overStates([...touching('player', ['FlatPowerRating']), ...touching('enemy', ['FlatProtectionRating'])], (up) =>
-      resistance(p.power + modSum(side(up, 'player'), 'FlatPowerRating'), enemyProtection + modSum(side(up, 'enemy'), 'FlatProtectionRating'), 0, 0, lin('enemy', 'PercentResistance')));
-    // Effect damage taken from stacks that are up (Deep Wound: more from Bleed).
-    const stateFx = (who, effect) => of(who).reduce((sum, st) => sum + st.uptime * st.mods.reduce((t, m) => t + (m.stat === 'EffectDamageTaken' && (!m.effect || m.effect === effect) ? m.value : 0), 0), 0);
-    const enemyTakes = Math.max(0, 1 + lin('enemy', 'PercentDamageTaken'));
-    // Drenched, Flooded: more damage from attacks only.
-    const factor = (1 - enemyRes) * (1 + p.damageDealt) * Math.max(0, enemyTakes + lin('enemy', 'PercentDamageTakenFromAttacks'));
-    // Fracture, Shatter: less armour while they're up.
-    // Fracture, Shatter: less armour while they're up, so hits then do more and break it more easily
-    // (ArmourBroken: a hit at least the armour at the time).
-    const lowered = of('enemy').filter((st) => st.mods.some((m) => m.stat === 'FlatCombatStatValue' && m.combatStat === 'Armour'));
-    const lowUp = Math.min(1, Math.max(0, ...lowered.map((st) => st.uptime)));
-    const lowBy = lowUp > 0 ? lowered.reduce((t, st) => t + st.uptime * st.mods.reduce((u, m) => u + (m.stat === 'FlatCombatStatValue' && m.combatStat === 'Armour' ? m.value : 0), 0), 0) / lowUp : 0;
-    const armourLow = Math.max(0, armour + lowBy);
-    const preSpread = (lo, hi, critMultiplier) => {
-      const full = hitSpread(lo, hi, p.critChance, critMultiplier, factor, armour);
-      if (!(lowUp > 0) || armourLow === armour) return full;
-      return [...full.map((x) => ({ d: x.d, p: x.p * (1 - lowUp), b: x.d >= armour })), ...hitSpread(lo, hi, p.critChance, critMultiplier, factor, armourLow).map((x) => ({ d: x.d, p: x.p * lowUp, b: x.d >= armourLow }))];
     };
-    const armourNow = armour - lowUp * (armour - armourLow);
-    const eInterval = Math.max(250, Math.floor(e.interval * (1 + adj.interval + onEnemy('PercentAttackInterval') + lin('enemy', 'PercentAttackInterval'))));
+    const playerHit = immune ? 0 : overStates(hitStates, hitWith);
+    // Effect damage taken from stacks that are up (Deep Wound: more from Bleed).
+    const stateFx = (who, effect, noStacks = false) => of(who).filter((st) => !(noStacks && st.stacking)).reduce((sum, st) => sum + st.uptime * st.mods.reduce((t, m) => t + (m.stat === 'EffectDamageTaken' && (!m.effect || m.effect === effect) ? m.value : 0), 0), 0);
+    // What's up on it some of the time that changes what your hits do (Fracture and Shatter: less
+    // protection and armour; Drenched: more damage from attacks; Burning Shield: more armour), mixed
+    // rather than averaged: resistance can't go below 0 and armour comes off every hit, so a hit while
+    // it's up and one while it's down aren't the average of the two. With each mix: your damage
+    // factor, its armour, and what that does to a roll.
+    const DEFENCE = ['FlatProtectionRating', 'PercentProtectionRating', 'PercentResistance', 'PercentDamageTaken', 'PercentDamageTakenFromAttacks'];
+    const armourOf = (states) => states.reduce((t, st) => t + st.mods.reduce((u, m) => u + (m.stat === 'FlatCombatStatValue' && m.combatStat === 'Armour' ? m.value : 0), 0), 0);
+    const itsDefence = of('enemy').filter((st) => st.mods.some((m) => DEFENCE.includes(m.stat) || (m.stat === 'FlatCombatStatValue' && m.combatStat === 'Armour')));
+    // Some change your hit chance too (Shambling Protection: half the evasion and 50 more armour), so
+    // more of your hits land while they're up: each mix counts by the hits that land in it.
+    const mixed = [...touching('player', ['FlatPowerRating']), ...itsDefence];
+    const others = hitStates.filter((st) => !mixed.includes(st));
+    const byHits = mixed.some((st) => hitStates.includes(st)) && !immune;
+    const mixes = stateMix(mixed).map(({ w, up }) => ({ up, w: byHits ? w * overStates(others, (rest) => hitWith([...up, ...rest])) : w }));
+    const hitWeight = mixes.reduce((t, x) => t + x.w, 0) || 1;
+    const defences = mixes.map(({ w: raw, up }) => {
+      const w = raw / hitWeight;
+      const its = side(up, 'enemy');
+      const res = resistance(p.power + modSum(side(up, 'player'), 'FlatPowerRating'), enemyProtection * (1 + modSum(its, 'PercentProtectionRating')) + modSum(its, 'FlatProtectionRating'), 0, 0, modSum(its, 'PercentResistance'));
+      const takes = Math.max(0, 1 + modSum(its, 'PercentDamageTaken'));
+      // Drenched, Flooded: more damage from attacks only.
+      return { w, res, takes, factor: (1 - res) * (1 + p.damageDealt) * Math.max(0, takes + modSum(its, 'PercentDamageTakenFromAttacks')), armour: Math.max(0, armour + armourOf(its)) };
+    });
+    const averageOf = (key) => defences.reduce((t, d) => t + d.w * d[key], 0);
+    const enemyRes = averageOf('res');
+    const enemyTakes = averageOf('takes');
+    const factor = averageOf('factor');
+    const armourNow = averageOf('armour');
+    // A landed hit over the mixes: with armour on (`b`: whether it breaks it, a hit at least the armour
+    // at the time; only its own armour can break) or broken.
+    const mixedSpread = (lo, hi, critMultiplier, armourOn) => defences.flatMap((d) => hitSpread(lo, hi, p.critChance, critMultiplier, d.factor, armourOn ? d.armour : 0)
+      .map((x) => ({ d: x.d, p: x.p * d.w, ...(armourOn ? { b: e.armour > 0 && x.d >= d.armour } : {}) })));
+    const anyArmour = defences.some((d) => d.armour > 0);
+    const eInterval = Math.max(250, Math.floor(e.interval * (1 + onEnemy('PercentAttackInterval') + lin('enemy', 'PercentAttackInterval'))));
     // Its turn lasts until the last hit of a multi-hit attack (AttackAction's hit timer).
     const eTurnMs = eInterval + (e.turnExtraMs ?? 0);
 
@@ -890,6 +1209,21 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const extraInterval = lin('player', 'PercentAttackInterval');
     const pInterval = extraInterval && p.intervalWith ? p.intervalWith(extraInterval) : p.interval;
     const pTurnMs = pInterval + pAttacks.reduce((s, a) => s + a.chance * attackExtraMs(a), 0);
+    // One side's turns for dotCycleAtHits: each attack with its hits' times and `c(a, k)`, the chance
+    // hit k of it starts a run.
+    const turnsOf = (attacks, interval, c) => attacks.map((a) => {
+      const hits = [];
+      let at = 0;
+      a.hits.forEach((h, i) => {
+        for (let n = 0; n < h.count; n++) {
+          if (i > 0 || n > 0) at += h.interval;
+          hits.push({ at, c: c(a, hits.length) });
+        }
+      });
+      return { chance: a.chance, hits, length: at + interval };
+    });
+    // The chance an effect of an attack goes on at its hit k, landing `land` of the time.
+    const atHit = (x, land, k) => (x.when === 'pre' ? x.chance : x.when === 'firstHit' ? x.chance * land * (1 - land) ** k : x.chance * land);
     const lands = (a) => (immune ? 0 : a.avoidable ? playerHit : 1);
     let pAttempts = 0;
     let pLanded = 0;
@@ -924,6 +1258,8 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const killShiftMs = shiftW > 0 ? shiftMs / shiftW : 0;
 
     const playerTakes = lin('player', 'PercentDamageTaken');
+    // Your protection with what's on you (Acid Burns takes 1.5% of it a stack).
+    const yourProtection = Math.max(0, p.protection * (1 + lin('player', 'PercentProtectionRating')) + lin('player', 'FlatProtectionRating'));
     // Attack reflect (ReflectAttackDamage): the HP a landed attack took, times the reflect, through the
     // attacker's resistance and armour, at least 1 but never its last HP point (so it can't kill).
     const itsReflect = (passive?.reflect ?? 0) + lin('enemy', 'PercentAttackReflect');
@@ -931,7 +1267,6 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     let reflectPerHit = 0; // on you, per landed damaging hit of yours
     let reflectPerItsHit = 0; // on it, per landed hit of its (weighted by landed)
     let landedPerKill = 0; // landed damaging hits
-    let hitSquare = 0; // mean square of a landed damaging hit, for how much the damage you do varies
     let armoured = 0;
     let playerMax = 0;
     let prayerXpPerTurn = 0;
@@ -944,6 +1279,7 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const byAttack = new Map(e.attacks.map((a) => [a, { tries: 0, landed: 0, damage: 0 }]));
     const damageRolls = []; // per enemy turn, for the chance of dying: { weight, min, max, currentHp, factor, armour }
     const shapes = []; // per enemy stance: your attacks' hits, for when the kill comes
+    const timings = []; // per enemy stance: every hit of each of your attacks, for killTime
     for (const es of e.stances) {
       const tri = triangleFor(gd, p.style, es.style);
       // Max hit with what's up on you some of the time, mixed rather than averaged: Starblight takes
@@ -951,7 +1287,7 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       const maxHitOf = (pct) => Math.max(Math.floor((p.baseMaxHit * (1 + p.percentMaxHit + elemBonus + pct) + p.flatMaxHit) * (1 + tri.maxHit)), 1);
       const maxHits = stateMix(touching('player', ['PercentMaxHit'])).map(({ w, up }) => {
         const max = maxHitOf(modSum(side(up, 'player'), 'PercentMaxHit'));
-        return { w, max, min: clamp(Math.floor(1 + p.flatMinHit + max * p.minHitOfMax), 1, max) };
+        return { w, max, min: clamp(Math.floor(1 + p.flatMinHit + max * (p.minHitOfMax + lin('player', 'MinHitBasedOnMaxHit'))), 1, max) };
       });
       const usual = maxHits.reduce((a, b) => (b.w > a.w ? b : a));
       const maxHit = usual.max;
@@ -969,10 +1305,10 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
           const { lo, hi } = range(usual);
           const spread = (armourOn) => maxHits.flatMap((m) => {
             const r = range(m);
-            return (armourOn ? preSpread(r.lo, r.hi, critMultiplier) : hitSpread(r.lo, r.hi, p.critChance, critMultiplier, factor, 0)).map((x) => ({ ...x, p: x.p * m.w }));
+            return mixedSpread(r.lo, r.hi, critMultiplier, armourOn).map((x) => ({ ...x, p: x.p * m.w }));
           });
           const post = spread(false);
-          kinds.push({ a, h, w, lo, hi, post, pre: armour > 0 ? spread(true) : post });
+          kinds.push({ a, h, w, lo, hi, post, pre: anyArmour ? spread(true) : post });
         }
       }
       const mix = (key) => kinds.flatMap((k) => k[key].map((x) => ({ ...x, p: x.p * k.w })));
@@ -980,7 +1316,6 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       landedPerKill += es.weight * kill.hits;
       armoured += es.weight * kill.armoured;
       const mean = (spread) => spread.reduce((s, x) => s + x.d * x.p, 0);
-      for (const k of kinds) hitSquare += es.weight * k.w * k.post.reduce((t, x) => t + x.d * x.d * x.p, 0);
       for (const k of kinds) {
         const avg = hitAvg.get(k.a) ?? { sum: 0, w: 0 };
         avg.sum += es.weight * k.w * (kill.armoured * mean(k.pre) + (1 - kill.armoured) * mean(k.post));
@@ -998,17 +1333,24 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
         byKind.set(k.a, list);
       }
       shapes.push({ weight: es.weight, attacks: [...byKind].map(([a, hits]) => ({ chance: a.chance, hits })) });
+      // Every hit in order with its wait, for killTime.
+      const spreadOf = new Map();
+      for (const k of kinds) spreadOf.set(k.h, kill.armoured >= 1 ? k.pre : [...k.pre.map((x) => ({ d: x.d, p: x.p * kill.armoured })), ...k.post.map((x) => ({ d: x.d, p: x.p * (1 - kill.armoured) }))]);
+      // Armour of its own breaks on a big enough hit: killTime follows it hit by hit.
+      const preOf = new Map(e.armour > 0 && anyArmour ? kinds.map((k) => [k.h, k.pre]) : []);
+      timings.push({ weight: es.weight, attacks: pAttacks.map((a) => ({ chance: a.chance, hits: a.hits.map((h) => ({ count: h.count, interval: h.interval, land: lands(a), spread: spreadOf.get(h) ?? null, ...(preOf.has(h) ? { pre: preOf.get(h), post: kinds.find((k) => k.h === h).post } : {}) })) })) });
 
       // Its hit chance against your evasion, with whatever's up on either side.
       const hit = overStates([...touching('enemy', ACCURACY), ...touching('player', EVASION_STATS)], (up) => {
         const mine = side(up, 'player');
-        const accuracy = Math.trunc(es.accuracy * (1 + adj.accuracy + onEnemy('PercentAccuracyRating') + modSum(side(up, 'enemy'), 'PercentAccuracyRating')));
+        const accuracy = Math.trunc(es.accuracy * (1 + onEnemy('PercentAccuracyRating') + modSum(side(up, 'enemy'), 'PercentAccuracyRating')));
         return hitChance(accuracy, p.evasion(es.stance, modSum(mine, 'PercentEvasionRating'), modSum(mine, 'FlatEvasionRating')));
       });
-      const playerRes = resistance(enemyPower + lin('enemy', 'FlatPowerRating'), p.protection + lin('player', 'FlatProtectionRating'), tri.resistance, 0, lin('player', 'PercentResistance'));
+      const playerRes = resistance(enemyPower + lin('enemy', 'FlatPowerRating'), yourProtection, tri.resistance, 0, lin('player', 'PercentResistance'));
       const eFactor = (1 - playerRes) * Math.max(0, 1 + playerTakes + lin('player', 'PercentDamageTakenFromAttacks'));
       const esMax = Math.max(1, Math.floor(es.maxHit * (1 + lin('enemy', 'PercentMaxHit'))));
-      const eMin = clamp(Math.floor(1 + esMax * (passive?.minHitOfMax ?? 0)), 1, esMax);
+      // Its min hit goes up with stacks of Dwarven Pride.
+      const eMin = clamp(Math.floor(1 + esMax * ((passive?.minHitOfMax ?? 0) + lin('enemy', 'MinHitBasedOnMaxHit'))), 1, esMax);
       enemyMaxHit += es.weight * esMax;
       if (itsReflect > 0) {
         // The killing hit only takes the HP that's left, so hits are scaled to its HP over the hits it takes.
@@ -1058,8 +1400,16 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     // Until it's gone nothing of yours that hurts it lands and effect damage does nothing
     // (CombatEffectsComponent.ApplyEffect, ActiveCombatEffect.Damage).
     const wardHits = ward > 0 ? ward / (1 + (p.doubleWard ?? 0)) : 0;
-    const wardLost = wardHits > 0 ? (wardHits + 1) / 2 : 0;
     const wardMs = wardHits > 0 && pDamaging > 0 ? (wardHits / pDamaging) * pTurnMs : 0;
+    // Wall of Blood raises its max ward but not what it has, so while it's up a hit loses only ward
+    // left / the bigger max. It's up from its first use on, which can come partway through the ward.
+    const wardKept = of('enemy').reduce((f, st) => {
+      const extra = st.mods.reduce((t, m) => t + (m.stat === 'FlatCombatStatValue' && m.combatStat === 'MaximumWard' ? m.value : 0), 0);
+      if (!(extra > 0) || !(ward > 0)) return f;
+      const warm = st.perMs > 0 ? wardMs / (wardMs + 1 / st.perMs) : 1;
+      return f - st.uptime * warm * (1 - ward / (ward + extra));
+    }, 1);
+    const wardLost = wardHits > 0 ? ((wardHits + 1) / 2) * wardKept : 0;
     const wardShare = wardHits > 0 ? Math.min(1, wardHits / (landedPerKill + wardLost)) : 0;
 
     // Effects each side's attacks apply to the other or itself; none land on an enemy you can't hurt
@@ -1070,13 +1420,23 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const nextStates = [];
     const unmodelled = new Set();
     // A stun on `who` at `rate` per ms: the share of its time lost, and its effects for the next pass.
-    const stunOn = (who, id, turns, rate, interval) => {
+    // In a fight of `ms`: none comes before the first hit that can set one off (`first` ms in), what
+    // keeps another from landing (Staggered) goes as the fight ends, and your kill ends the fight
+    // partway through some of its stuns (yours it waits out). Each stun takes `len` of the fight.
+    const stunShare = (who, rate, lockout, first, len, ms) => {
+      if (!(ms > 0) || !Number.isFinite(ms)) return (rate * len) / (1 + rate * lockout);
+      const span = Math.max(0, ms - first);
+      const cut = who === 'enemy' ? clamp(1 - len / (2 * Math.max(span, 1)), 0, 1) : 1;
+      return (stunsIn(span, rate, lockout) * len * cut) / ms;
+    };
+    const stunOn = (who, id, turns, rate, interval, first) => {
       if (!(rate > 0)) return 0;
       const c = stunCost(id, turns, interval);
-      const per = 1 + rate * c.lockout;
-      if (c.mods.length) nextStates.push({ who, name: c.name, mods: c.mods, uptime: (rate * c.stunnedMs) / per });
-      if (c.after?.mods.length) nextStates.push({ who, name: c.after.name, mods: c.after.mods, uptime: (rate * c.after.ms) / per });
-      const lost = (rate * c.lost) / per;
+      // For the turns lost, the pass before's fight; for what's up meanwhile, this one's (`uptimeAt`).
+      const at = (len) => (ms) => stunShare(who, rate, c.lockout, first, len, ms);
+      if (c.mods.length) nextStates.push({ who, name: c.name, mods: c.mods, uptime: 0, uptimeAt: at(c.stunnedMs) });
+      if (c.after?.mods.length) nextStates.push({ who, name: c.after.name, mods: c.after.mods, uptime: 0, uptimeAt: at(c.after.ms) });
+      const lost = stunShare(who, rate, c.lockout, first, c.lost, adj.killMs);
       notes.push({ who, kind: 'stun', name: c.name, share: lost });
       return lost;
     };
@@ -1091,19 +1451,20 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       const groups = new Map();
       for (const x of list) {
         if (!(x.rate > 0)) continue;
-        const g = groups.get(x.id) ?? { rate: 0, turns: 0 };
+        const g = groups.get(x.id) ?? { rate: 0, turns: 0, first: Infinity };
         g.rate += x.rate;
         g.turns = Math.max(g.turns, x.turns ?? effectDef(x.id)?.turns ?? 1);
+        g.first = Math.min(g.first, x.first);
         groups.set(x.id, g);
       }
       let lost = 0;
-      for (const [id, g] of groups) lost += stunOn(who, id, g.turns, g.rate, interval);
+      for (const [id, g] of groups) lost += stunOn(who, id, g.turns, g.rate, interval, g.first);
       return lost;
     };
     const enemyStun = stunsOn('enemy', [
-      ...(passive?.selfStuns ?? []).map((st) => ({ id: st.effect ?? 'Stun', turns: st.turns, rate: oncePerTurn(e.attacks, itsLand, st.chance) / eTurnMs })),
-      ...eTriggers.filter((x) => x.kind === 'stun' && x.to === 'self').map((x) => ({ id: x.effect, turns: x.turns, rate: x.anyPerTurn / eTurnMs })),
-      ...pTriggers.filter((x) => x.kind === 'stun' && x.to === 'target').map((x) => ({ id: x.effect, turns: x.turns, rate: pTurnsPerMs * (adj.playerActive ?? 1) * x.anyPerTurn * (1 - avoids(enemyFx, x.effect)) * (1 - wardShare) })),
+      ...(passive?.selfStuns ?? []).map((st) => ({ id: st.effect ?? 'Stun', turns: st.turns, first: eInterval, rate: oncePerTurn(e.attacks, itsLand, st.chance) / eTurnMs })),
+      ...eTriggers.filter((x) => x.kind === 'stun' && x.to === 'self').map((x) => ({ id: x.effect, turns: x.turns, first: eInterval, rate: x.anyPerTurn / eTurnMs })),
+      ...pTriggers.filter((x) => x.kind === 'stun' && x.to === 'target').map((x) => ({ id: x.effect, turns: x.turns, first: pInterval, rate: pTurnsPerMs * (adj.playerActive ?? 1) * x.anyPerTurn * (1 - avoids(enemyFx, x.effect)) * (1 - wardShare) })),
     ], eInterval);
     const enemyTurnsPerSec = (1000 / eTurnMs) * (1 - Math.min(0.9, enemyStun));
     let enemyDps = enemyDamage * enemyTurnsPerSec;
@@ -1112,6 +1473,13 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
 
     const turnsToKill = pDamaging > 0 ? (landedPerKill + wardLost) / pDamaging : Infinity;
     let killMs = Number.isFinite(turnsToKill) ? Math.max(pInterval, turnsToKill * pTurnMs + killShiftMs) : Infinity;
+    // Your turns take different times (a special attack's later hits wait), so in a short fight which
+    // attack makes the kill and on which hit matters: hit by hit (killTime). Ward's lost hits on top.
+    const variable = pAttacks.some((a) => a.hits.length > 1 || a.hits.some((h) => h.count > 1));
+    if (variable && Number.isFinite(killMs) && turnsToKill <= 30 && timings.length) {
+      const exact = timings.reduce((t, x) => t + x.weight * killTime(e.hitpoints, x.attacks, pInterval), 0);
+      if (Number.isFinite(exact)) killMs = Math.max(pInterval, exact + (pDamaging > 0 ? (wardLost / pDamaging) * pTurnMs : 0));
+    }
     const playerTurnsPerSec = 1000 * pTurnsPerMs;
     const rateOf = (on) => (on === 'playerHit' ? pLanded * playerTurnsPerSec : on === 'playerMiss' ? (pAttempts - pLanded) * playerTurnsPerSec : on === 'enemyAttack' ? enemyAttemptsPerSec : enemyHitsPerSec);
     // Stuns on you: from its passive (one at the start of the fight, Petrify, only delays it) and its
@@ -1128,10 +1496,10 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
         startStunMs += st.chance * (1 - avoid) * st.turns * pInterval;
         continue;
       }
-      stunsOnYou.push({ id: st.effect ?? 'Stun', turns: st.turns, rate: turnRate(st.on, st.chance) * (1 - avoid) });
+      stunsOnYou.push({ id: st.effect ?? 'Stun', turns: st.turns, first: st.on === 'playerHit' || st.on === 'playerMiss' ? pInterval : eInterval, rate: turnRate(st.on, st.chance) * (1 - avoid) });
     }
-    for (const x of eTriggers) if (x.kind === 'stun' && x.to === 'target') stunsOnYou.push({ id: x.effect, turns: x.turns, rate: ((enemyTurnsPerSec * x.anyPerTurn) / 1000) * (1 - avoids(playerFx, x.effect)) });
-    for (const x of pTriggers) if (x.kind === 'stun' && x.to === 'self') stunsOnYou.push({ id: x.effect, turns: x.turns, rate: pTurnsPerMs * x.anyPerTurn });
+    for (const x of eTriggers) if (x.kind === 'stun' && x.to === 'target') stunsOnYou.push({ id: x.effect, turns: x.turns, first: eInterval, rate: ((enemyTurnsPerSec * x.anyPerTurn) / 1000) * (1 - avoids(playerFx, x.effect)) });
+    for (const x of pTriggers) if (x.kind === 'stun' && x.to === 'self') stunsOnYou.push({ id: x.effect, turns: x.turns, first: pInterval, rate: pTurnsPerMs * x.anyPerTurn });
     const playerStun = stunsOn('player', stunsOnYou, pInterval);
     const playerActive = 1 - Math.min(0.9, playerStun);
     if (Number.isFinite(killMs)) killMs /= playerActive;
@@ -1145,20 +1513,28 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     for (const x of pTriggers) {
       const d = x.kind === 'dot' && x.to === 'target' ? effectDef(x.effect) : null;
       if (!d) continue;
-      const lands = 1 - avoids(enemyFx, x.effect);
+      const notAvoided = 1 - avoids(enemyFx, x.effect);
       const avg = hitAvg.get(x.attack);
       const base = d.formula === 'DamageDealt' ? Math.max(1, (avg?.w > 0 ? avg.sum / avg.w : 0) * d.percent) : d.formula === 'MaxHit' ? Math.max(1, Math.trunc(playerMax * d.percent)) : 0;
-      if (!(lands > 0) || !(base > 0)) continue;
+      if (!(notAvoided > 0) || !(base > 0)) continue;
       const takes = Math.max(0, enemyTakes + enemyFx('EffectDamageTaken', x.effect) + stateFx('enemy', x.effect));
       const tick = (stacks) => Math.max(1, Math.trunc(stacks * base * (1 + p.damageDealt) * takes * (1 - enemyRes) - armourNow * armoured));
-      const { stackRate, startRate } = triggerRates(playerTurnsPerSec * playerActive * lands, x);
-      const dps = dotDps(d, tick, stackRate, startRate);
+      const { stackRate } = triggerRates(playerTurnsPerSec * playerActive * notAvoided, x);
+      // Runs start at your hits; while you're stunned they don't.
+      const cycle = dotCycleAtHits(d, turnsOf(pAttacks, pInterval, (a, k) => (a === x.attack ? atHit(x, lands(a), k) * notAvoided : 0)));
+      const cycleSec = cycle.sec / playerActive;
+      const dps = dotDps(d, tick, stackRate, cycleSec, cycle.burst);
       // While it runs it can change its stats too (Suffocate: less accuracy).
       const dotMods = (d.mods ?? []).filter((m) => STATE_STATS.has(m.stat));
-      if (dotMods.length) nextStates.push({ who: 'enemy', name: d.name, mods: dotMods, uptime: uptimeOf(startRate / 1000, d.procs * d.interval) });
+      if (dotMods.length && Number.isFinite(cycleSec)) nextStates.push({ who: 'enemy', name: d.name, mods: dotMods, uptime: (d.procs * d.interval) / 1000 / cycleSec });
       dotOnEnemyDps += dps;
       // Effect lifesteal: you heal a share of what it deals (ActiveCombatEffect.Damage).
-      dotsOnEnemy.push({ dps, delayMs: pInterval + d.interval + wardMs, lifesteal: Math.max(0, playerFx('EffectLifesteal', x.effect)) });
+      // None is running as a fight starts (it's cleared when it dies), so it's behind the average: by
+      // about half a run when starts are rare (Griffin Claws' Bleed), less when they come back to back.
+      // The first proc comes an interval after the start.
+      const runMs = d.procs * d.interval;
+      const waitMs = Math.max(0, cycleSec * 1000 - runMs);
+      dotsOnEnemy.push({ dps, delayMs: pInterval + d.interval + wardMs + (runMs / 2) * (waitMs / (waitMs + runMs)), lifesteal: Math.max(0, playerFx('EffectLifesteal', x.effect)), procsPerSec: d.procs / cycleSec, fixed: d.formula !== 'DamageDealt' });
       notes.push({ who: 'enemy', kind: 'dot', name: d.name, dps });
     }
     // Your reflect: from its first hit on, damage that gives no XP either.
@@ -1167,13 +1543,15 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       dotsOnEnemy.push({ dps: reflectOnEnemyDps, delayMs: eInterval });
       notes.push({ who: 'enemy', kind: 'reflect', name: 'Reflect', dps: reflectOnEnemyDps });
     }
+    // How long it's done damage by `ms` into the fight.
+    const dotTime = (ms, x) => Math.max(0, ms - x.delayMs);
     let dotFactor = 1;
     let dotDamage = 0;
     let effectHealPerKill = 0;
     if (dotsOnEnemy.length && Number.isFinite(killMs)) {
       // Hits take its HP off at HP / killMs; the damage over time adds dps once its delay is past.
       const before = killMs;
-      const dealt = (ms) => dotsOnEnemy.reduce((s, x) => s + (x.dps * Math.max(0, ms - x.delayMs)) / 1000, 0);
+      const dealt = (ms) => dotsOnEnemy.reduce((s, x) => s + (x.dps * dotTime(ms, x)) / 1000, 0);
       let lo = 0;
       let hi = before;
       for (let i = 0; i < 40; i++) {
@@ -1209,48 +1587,79 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       if (!Number.isFinite(killMs)) slimeHealed = 0;
       healFactor = killMs / before;
     }
-    // Its healing from what it does to you (lifesteal, Drain, effect lifesteal) at the rate the pass
-    // before found: once it has hit you and you've hurt it (healing at full HP does nothing), it undoes
-    // damage you've done, so the kill takes longer.
-    // Its HP then goes up and down: your hits take it off in lumps, its healing puts it back, never
-    // past full (CharacterHealth.Heal), so healing that would take it past full is lost. That's a
-    // random walk held at full HP: with drift m (your damage less its healing a ms) and spread v (the
-    // variance of your damage a ms), the time to take it from x down to 0 is g(HP) - g(x), where
-    // g(x) = x / m + v / (2 m^2) (e^(-2 m x / v) - 1). It can still die when it heals faster than you
-    // hurt it, on a lucky run of hits, but that takes a long time.
+    // Its healing from what it does to you (lifesteal, Drain, effect lifesteal), at the rate the pass
+    // before found. It undoes damage you've done, but never past full, so it's lost while you haven't
+    // hurt it: a chain over the damage it hasn't healed back, your turns doing what they do at the rate
+    // you take its HP off (damage over time included), its healing in between (healedTurnsToKill).
     let itsHealed = 0;
     const itsHeal = (adj.itsHealPerSec ?? 0) / 1000;
     if (itsHeal > 0 && Number.isFinite(killMs)) {
       const before = killMs;
       const rate = e.hitpoints / killMs;
-      const from = Math.max(eInterval, pDamaging > 0 ? pTurnMs / Math.min(1, pDamaging) : 0);
-      const spread = Math.max(1e-9, ((pDamaging * playerActive) / pTurnMs) * hitSquare);
-      const m = rate - itsHeal;
-      const g = (x) => {
-        const z = (2 * m * x) / spread;
-        if (Math.abs(z) < 1e-6) return (x * x) / spread;
-        if (-z > 60) return Infinity;
-        return x / m + (spread / (2 * m * m)) * Math.expm1(-z);
-      };
-      const ahead = Math.min(e.hitpoints, rate * from);
-      const after = g(e.hitpoints) - g(ahead);
-      // That spreads your damage both ways, so with little healing it loses too much of it; your hits
-      // only ever go one way. Then: it's back at full only when its healing between your hits has
-      // undone them all, which happens again after each time with chance (healing / damage), each
-      // time losing the healing until your next hit.
-      const hitsPerMs = (pDamaging * playerActive) / pTurnMs;
-      const ratio = itsHeal / rate;
-      const lost = ratio < 1 && hitsPerMs > 0 ? (itsHeal / hitsPerMs) * (ratio / (1 - ratio)) : Infinity;
-      const oneWay = m > 0 ? from + (e.hitpoints - ahead - lost) / m : -Infinity;
-      const walk = Number.isFinite(after) ? from + after : Infinity;
-      killMs = Math.max(before, walk, oneWay);
+      // What its hits heal comes in lumps, one a landed hit, bigger while Drain is up and with bigger
+      // hits: in each of your turns, its turns in it (the whole numbers either side of the average),
+      // each an attack picked by chance with its hits landing or not. What its effects heal comes evenly.
+      let heal = itsHeal * pTurnMs;
+      const lumps = adj.itsHealHits;
+      if (lumps?.perTurn > 0 && lumps.kinds.length) {
+        // A tenth of a point is close enough to tell lumps apart.
+        const merge = (list) => {
+          const out = new Map();
+          for (const x of list) if (x.p > 0) out.set(Math.round(x.h * 10) / 10, (out.get(Math.round(x.h * 10) / 10) ?? 0) + x.p);
+          return [...out].map(([h, p]) => ({ h, p }));
+        };
+        const add = (a, b) => merge(a.flatMap((x) => b.map((y) => ({ h: x.h + y.h, p: x.p * y.p }))));
+        let itsTurn = [];
+        for (const a of lumps.attacks) {
+          // What a hit deals is rolled anywhere up to about twice its average: two points with that spread.
+          const one = [{ h: 0, p: 1 - a.land }, ...lumps.kinds.flatMap((k) => [1 - 1 / Math.sqrt(3), 1 + 1 / Math.sqrt(3)].map((f) => ({ h: k.steal * a.dealt * f, p: (a.land * k.share) / 2 })))];
+          let all = [{ h: 0, p: 1 }];
+          for (let c = 0; c < a.hits; c++) all = add(all, one);
+          itsTurn.push(...all.map((x) => ({ h: x.h, p: x.p * a.chance })));
+        }
+        itsTurn = merge(itsTurn);
+        const mean = itsTurn.reduce((t, x) => t + x.h * x.p, 0);
+        if (mean > 0) {
+          itsTurn = itsTurn.map((x) => ({ h: (x.h * lumps.perTurn) / mean, p: x.p }));
+          const m = pTurnMs / eTurnMs;
+          const even = Math.max(0, heal - lumps.perTurn * m);
+          heal = [];
+          let dist = [{ h: even, p: 1 }];
+          for (let count = 0; count <= Math.floor(m) + 1; count++) {
+            const w = count === Math.floor(m) ? 1 - (m % 1) : count === Math.floor(m) + 1 ? m % 1 : 0;
+            if (w > 0) heal.push(...dist.map((x) => ({ h: x.h, p: x.p * w })));
+            dist = add(dist, itsTurn);
+          }
+        }
+      }
+      // Your hits at what they do (only the last is cut short by the HP left); your damage over time
+      // comes a little at a time between them, like its healing the other way, so it keeps it off full.
+      // Against the same chain without healing, so the grid's own error cancels out.
+      let healed = 0;
+      let plain = 0;
+      for (const x of timings) {
+        // (At its steady rate: this is the long fight, where its wait for the first start counts less.)
+        const dot = (dotsOnEnemy.reduce((t, y) => t + y.dps, 0) * pTurnMs) / 1000;
+        const less = (list) => (Array.isArray(list) ? list : [{ h: list, p: 1 }]).map((y) => ({ h: y.h - dot, p: y.p }));
+        healed += x.weight * healedTurnsToKill(e.hitpoints, x.attacks, less(heal));
+        plain += x.weight * healedTurnsToKill(e.hitpoints, x.attacks, less(0));
+      }
+      killMs = Number.isFinite(healed) && plain > 0 ? Math.max(before, (before * healed) / plain) : Infinity;
       if (killMs > 1000 * before) killMs = Infinity;
       if (Number.isFinite(killMs)) itsHealed = Math.max(0, rate * killMs - e.hitpoints);
       healFactor *= killMs / before;
     }
     if (Number.isFinite(killMs)) killMs += startStunMs;
     // Your effect lifesteal on your damage over time, over the whole fight.
-    if (Number.isFinite(killMs)) for (const x of dotsOnEnemy) effectHealPerKill += ((x.lifesteal ?? 0) * x.dps * Math.max(0, killMs - x.delayMs)) / 1000;
+    // Each proc heals at least 1 and a whole number (a proc from your max hit is the same each time;
+    // one from the damage you dealt varies, and the rounding down and the at-least-1 about even out).
+    if (Number.isFinite(killMs)) {
+      for (const x of dotsOnEnemy) {
+        if (!(x.lifesteal > 0) || !(x.procsPerSec > 0)) continue;
+        const avg = x.dps / x.procsPerSec;
+        effectHealPerKill += ((x.procsPerSec * dotTime(killMs, x)) / 1000) * Math.max(1, x.fixed ? Math.trunc(x.lifesteal * avg) : x.lifesteal * avg);
+      }
+    }
     const attacksPerKill = turnsToKill * dotFactor * healFactor;
 
     // Its attacks before the kill. Both sides start a full turn after it spawns (CombatActionComponent
@@ -1264,6 +1673,9 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     // A long fight is many of its turns either way, so its average rate is close enough there.
     if (Number.isFinite(killMs) && shapes.length && enemyTurnsPerKill <= 40) {
       const chances = [0];
+      const timeMass = [0];
+      let allExact = true;
+      const plainMs = (k) => Math.max(pInterval, k * pTurnMs + killShiftMs);
       for (const sh of shapes) {
         // Your damage a turn, mean and spread, for the shape of a longer fight.
         let m = 0;
@@ -1280,13 +1692,19 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
           m += a.chance * am;
           sq += a.chance * (av + am * am);
         }
-        const exact = turnsToKill <= 12 ? killTurnChances(e.hitpoints, sh.attacks) : null;
-        const list = exact ?? normalTurnChances(turnsToKill, (sq - m * m) / Math.max(1e-9, m * m));
-        list.forEach((x, k) => (chances[k] = (chances[k] ?? 0) + sh.weight * x));
+        const exact = turnsToKill <= 12 ? killTurnChances(e.hitpoints, timings[shapes.indexOf(sh)].attacks, pInterval) : null;
+        if (!exact) allExact = false;
+        const list = exact?.chances ?? normalTurnChances(turnsToKill, (sq - m * m) / Math.max(1e-9, m * m));
+        list.forEach((x, k) => {
+          chances[k] = (chances[k] ?? 0) + sh.weight * x;
+          timeMass[k] = (timeMass[k] ?? 0) + sh.weight * x * (exact ? exact.times[k] : plainMs(k));
+        });
       }
-      const plainMs = (k) => Math.max(pInterval, k * pTurnMs + killShiftMs);
-      const meanMs = chances.reduce((t, x, k) => t + x * plainMs(k), 0);
-      const stretched = ward > 0 || dotFactor !== 1 || healFactor !== 1 || playerActive < 1 || startStunMs > 0;
+      const atTurn = chances.map((x, k) => (x > 0 ? timeMass[k] / x : plainMs(k)));
+      const meanMs = chances.reduce((t, x, k) => t + x * atTurn[k], 0);
+      // Stretched by what else slows or speeds the kill; turns that take different times are already
+      // in the exact chances, but only at their average in the long-fight shape.
+      const stretched = ward > 0 || dotFactor !== 1 || healFactor !== 1 || playerActive < 1 || startStunMs > 0 || (variable && !allExact);
       const scale = stretched && meanMs > 0 ? killMs / meanMs : 1;
       // Its turn n starts at n x its interval plus the time its multi-hit attacks before took (`waits`).
       const tie = 1000 / 120;
@@ -1307,10 +1725,12 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       enemyAttemptsPerKill = 0;
       chances.forEach((x, k) => {
         if (!(x > 0)) return;
-        const t = plainMs(k) * scale + tie;
+        const t = atTurn[k] * scale + tie;
         for (let n = 1; n * eInterval <= t; n++) {
-          enemyTurnsPerKill += x * going * waits(n - 1, t - n * eInterval);
-          for (const o of offsets) for (const at of o.list) enemyAttemptsPerKill += x * going * o.chance * waits(n - 1, t - n * eInterval - at);
+          // Nothing of yours can stun it before your first hit.
+          const g = n * eInterval < pInterval ? 1 : going;
+          enemyTurnsPerKill += x * g * waits(n - 1, t - n * eInterval);
+          for (const o of offsets) for (const at of o.list) enemyAttemptsPerKill += x * g * o.chance * waits(n - 1, t - n * eInterval - at);
         }
       });
     }
@@ -1318,25 +1738,98 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     // you is cut the same way.
     const attackShare = killMs > 0 && Number.isFinite(killMs) && enemyTurnsPerSec > 0 ? enemyTurnsPerKill / ((killMs / 1000) * enemyTurnsPerSec) : 1;
 
+    // Its passive's other effects (Acid Burns, Plague Touch, Corrupting Touch, Spirit's Evasive...), as
+    // chances each of its turns, from what sets them off: its hits, the hits it tries, the first of
+    // each turn, your hits or misses on it (those come with your turns, so they're timed by yours),
+    // or once a fight.
+    const yourShare = eTurnMs / pTurnMs; // your turns in one of its
+    const passiveTriggers = (passive?.applies ?? []).map((x) => {
+      const yours = x.on === 'playerHit' || x.on === 'playerMiss';
+      const land = x.on === 'playerHit' ? lands : (a) => 1 - lands(a);
+      let perTurn = 0;
+      let any = 0;
+      if (x.on === 'enemyHit') [perTurn, any] = [x.chance * enemyLanded, oncePerTurn(e.attacks, itsLand, x.chance)];
+      else if (x.on === 'enemyAttack') [perTurn, any] = [x.chance * enemyAttempts, oncePerTurn(e.attacks, () => 1, x.chance)];
+      else if (x.on === 'enemyTurn') [perTurn, any] = [x.chance, x.chance];
+      else if (yours) [perTurn, any] = [x.chance * (x.on === 'playerHit' ? pLanded : pAttempts - pLanded) * yourShare, oncePerTurn(pAttacks, land, x.chance) * yourShare];
+      else [perTurn, any] = [x.chance / Math.max(1, enemyTurnsPerKill), x.chance / Math.max(1, enemyTurnsPerKill)];
+      // Set off by your hit on you, it lasts its turns of yours in full (your turn ends after it).
+      return { ...x, attack: null, perTurn, anyPerTurn: any, ...(yours ? (x.to === 'self' ? { timedBy: 'player' } : { fullTurns: true }) : {}) };
+    }).filter((x) => x.perTurn > 0);
+    const itsTriggers = [...eTriggers, ...passiveTriggers];
+    // Stacks that build up until the fight ends (ActiveStackingEffect: Off Balance, Quicksand,
+    // Exsanguinate, Deep Wound, Burning Flame): the average over a fight of the applications it has,
+    // for the next pass, and for this one's damage over time on you (its fight so far was shorter).
+    const yourTurnsPerKill = Number.isFinite(killMs) ? attacksPerKill : 0;
+    // Applications a fight of each, by side and effect. Its passive's stacks on itself (Hivemind, Smoke
+    // Body, Dwarven Pride: from your hits or misses or its own) are the same effect as any its attacks
+    // put on (Grand Boast's Dwarven Pride): one count, one max.
+    const counts = new Map();
+    const count = (who, effect, d, n) => {
+      const key = `${who}|${effect}`;
+      const c = counts.get(key) ?? { who, d, n: 0 };
+      c.n += n;
+      counts.set(key, c);
+    };
+    if (Number.isFinite(killMs)) {
+      for (const r of passive?.ramps ?? []) {
+        const n = r.on === 'playerHit' ? pLanded * yourTurnsPerKill : r.on === 'playerMiss' ? (pAttempts - pLanded) * yourTurnsPerKill
+          : r.on === 'enemyHit' ? enemyAttemptsPerKill * enemyHitChance : enemyAttemptsPerKill;
+        count('enemy', r.effect ?? r.name, effectDef(r.effect) ?? { name: r.name, maxStacks: r.maxStacks, mods: r.mods }, n);
+      }
+      for (const [list, by] of [[pTriggers, 'player'], [itsTriggers, 'enemy']]) {
+        for (const x of list) {
+          const d = x.kind === 'stacking' ? effectDef(x.effect) : null;
+          if (!d) continue;
+          const who = x.to === 'self' ? by : by === 'player' ? 'enemy' : 'player';
+          const applied = x.perTurn * (by === 'player' ? yourTurnsPerKill : enemyTurnsPerKill) * (1 - avoids(who === 'player' ? playerFx : enemyFx, x.effect)) * (who === 'enemy' && by === 'player' ? 1 - wardShare : 1);
+          count(who, x.effect, d, applied * (x.stacks ?? d.stacks ?? 1));
+        }
+      }
+    }
+    const stacked = [];
+    for (const { who, d, n } of counts.values()) {
+      // Applications spread over the fight: n of them average n / 2 stacks, less once they hit the max.
+      const stacks = n <= d.maxStacks ? n / 2 : d.maxStacks - (d.maxStacks * d.maxStacks) / (2 * n);
+      const mods = d.mods.filter((m) => STATE_STATS.has(m.stat) || m.stat === 'EffectDamageTaken').map((m) => ({ ...m, value: m.value * stacks }));
+      if (!(stacks > 0) || !mods.length) {
+        unmodelled.add(d.name);
+        continue;
+      }
+      stacked.push({ who, name: d.name, mods, uptime: 1, stacks, stacking: true });
+    }
+    // Effect damage taken now: stacks as this pass has them.
+    const stateFxNow = (who, effect) => stateFx(who, effect, true) + stacked.filter((st) => st.who === who).reduce((t, st) => t + st.mods.reduce((u, m) => u + (m.stat === 'EffectDamageTaken' && (!m.effect || m.effect === effect) ? m.value : 0), 0), 0);
+
     // Damage over time on you: from its passive and its attacks, each proc through your resistance and
     // armour (at least 1), less your avoidance and effect damage reduction.
-    const playerRes = resistance(enemyPower + lin('enemy', 'FlatPowerRating'), p.protection + lin('player', 'FlatProtectionRating'), 0, 0, lin('player', 'PercentResistance'));
+    const playerRes = resistance(enemyPower + lin('enemy', 'FlatPowerRating'), yourProtection, 0, 0, lin('player', 'PercentResistance'));
     // The same effect from its passive and an attack is one effect on you (it isn't refreshed while up),
-    // so their triggers add up and their damage is averaged.
+    // so their triggers add up and their damage is averaged. `every`: the turns its starts come on.
     const onYou = new Map();
-    const addDot = (d, id, perSec, base, x, fromItsAttacks) => {
-      const g = onYou.get(id) ?? { d, stackRate: 0, startRate: 0, damage: 0, fromAttacks: 0 };
+    // `side`: whose hits start it, and `c(a, k)` the chance hit k of attack a does; null when it starts
+    // once a fight.
+    const addDot = (d, id, perSec, base, x, fromItsAttacks, side, c) => {
+      const g = onYou.get(id) ?? { d, stackRate: 0, startRate: 0, damage: 0, fromAttacks: 0, side, cs: [] };
       const { stackRate, startRate } = triggerRates(perSec, x);
       g.stackRate += stackRate;
       g.startRate += startRate;
       g.damage += stackRate * base;
       if (fromItsAttacks) g.fromAttacks += stackRate;
+      if (g.side !== side) g.side = null;
+      g.cs.push(c);
       onYou.set(id, g);
     };
     for (const d of passive?.dots ?? []) {
       const triggers = (d.on === 'start' ? 1000 / (killMs + spawnMs) : rateOf(d.on)) * d.chance * (1 - avoids(playerFx, d.effect ?? d.name)); // per second
       const base = d.formula === 'DamageDealt' ? Math.max(1, enemyAvgHit * d.percent) : Math.max(1, Math.trunc(enemyMaxHit * d.percent));
-      if (triggers > 0) addDot(d, d.effect ?? d.name, triggers, base, null, d.on === 'enemyHit' || d.on === 'enemyAttack');
+      // What it does to your stats while it runs is on the effect itself (Silt Burns).
+      const def = { ...d, mods: (d.effect && effectDef(d.effect)?.mods) || d.mods || [] };
+      const notAvoided = 1 - avoids(playerFx, d.effect ?? d.name);
+      const yours = d.on === 'playerHit' || d.on === 'playerMiss';
+      const side = d.on === 'start' ? null : yours ? 'player' : 'enemy';
+      const c = (a, k) => d.chance * notAvoided * (d.on === 'enemyHit' ? itsLand(a) : d.on === 'playerHit' ? lands(a) : d.on === 'playerMiss' ? 1 - lands(a) : 1);
+      if (triggers > 0) addDot(def, d.effect ?? d.name, triggers, base, null, d.on === 'enemyHit' || d.on === 'enemyAttack', side, c);
     }
     for (const x of eTriggers) {
       const d = x.kind === 'dot' && x.to === 'target' ? effectDef(x.effect) : null;
@@ -1344,26 +1837,37 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       const lands = 1 - avoids(playerFx, x.effect);
       const tally = byAttack.get(x.attack);
       const base = d.formula === 'DamageDealt' ? Math.max(1, (tally.landed > 0 ? tally.damage / tally.landed : 0) * d.percent) : d.formula === 'MaxHit' ? Math.max(1, Math.trunc(enemyMaxHit * d.percent)) : 0;
-      if (lands > 0 && base > 0) addDot(d, x.effect, enemyTurnsPerSec * lands, base, x, true);
+      if (lands > 0 && base > 0) addDot(d, x.effect, enemyTurnsPerSec * lands, base, x, true, 'enemy', (a, k) => (a === x.attack ? atHit(x, itsLand(a), k) * lands : 0));
     }
     let dotOnYouDps = 0;
     let dotOnYouPerKill = 0;
     let itsEffectHealPerSec = 0;
     const dotTicks = []; // { perSec, avg, steal }: its procs on you, for lifesteal (at least 1 a proc)
     for (const [id, g] of onYou) {
-      const base = g.damage / g.stackRate;
-      const takes = Math.max(0, 1 + playerTakes + playerFx('EffectDamageTaken', id) + stateFx('player', id));
+      // (Rounded off so 3 from a sum of rates comes back as 3, not 2.999..., before the game's rounding down.)
+      let base = Math.round((g.damage / g.stackRate) * 1e6) / 1e6;
+      const takes = Math.max(0, 1 + playerTakes + playerFx('EffectDamageTaken', id) + stateFxNow('player', id));
       const tick = (stacks) => Math.max(1, Math.trunc(stacks * base * takes * (1 - playerRes) - p.armour));
-      const dps = dotDps(g.d, tick, g.stackRate, g.startRate);
+      // Started at hits (its, or yours), it runs on the turns of that side; once a fight, at random.
+      const either = (a, k) => 1 - g.cs.reduce((t, c) => t * (1 - c(a, k)), 1);
+      const cycle = g.side === 'enemy' ? dotCycleAtHits(g.d, turnsOf(e.attacks, eInterval, either)) : g.side === 'player' ? dotCycleAtHits(g.d, turnsOf(pAttacks, pInterval, either)) : null;
+      const cycleSec = cycle ? cycle.sec / (g.side === 'enemy' ? 1 - Math.min(0.9, enemyStun) : playerActive) : g.startRate > 0 ? dotCycleSec(g.d, g.startRate) : Infinity;
+      // From the damage of the hit that starts it (Bleed): the first hit of a burst that sets it off
+      // starts it and the rest can't, so a single big hit starts more than its share.
+      if (g.d.formula === 'DamageDealt' && g.side === 'enemy' && cycle) {
+        const dealt = e.attacks.reduce((t, a, i) => t + cycle.starts[i] * (byAttack.get(a)?.landed > 0 ? byAttack.get(a).damage / byAttack.get(a).landed : 0), 0);
+        if (dealt > 0) base = Math.max(1, dealt * g.d.percent);
+      }
+      const dps = dotDps(g.d, tick, g.stackRate, cycleSec, cycle?.burst ?? 0);
       dotOnYouDps += dps;
       const fromAttacks = g.fromAttacks / g.stackRate;
       if (Number.isFinite(killMs)) dotOnYouPerKill += (dps * (fromAttacks * attackShare + 1 - fromAttacks) * killMs) / 1000;
       // Procs a second: runs one after another, each waiting for the next start (dotDps).
-      const perSec = g.startRate > 0 ? g.d.procs / ((g.d.procs * g.d.interval) / 1000 + 1 / g.startRate) : 0;
-      if (perSec > 0) dotTicks.push({ perSec, avg: dps / perSec, steal: Math.max(0, enemyFx('EffectLifesteal', id)) });
+      const perSec = Number.isFinite(cycleSec) && cycleSec > 0 ? g.d.procs / cycleSec : 0;
+      if (perSec > 0) dotTicks.push({ perSec, avg: dps / perSec, fixed: g.d.formula !== 'DamageDealt', steal: Math.max(0, enemyFx('EffectLifesteal', id)) });
       // While it runs it can change your stats too (Silt Burns: less accuracy and evasion).
       const dotMods = (g.d.mods ?? []).filter((m) => STATE_STATS.has(m.stat));
-      if (dotMods.length) nextStates.push({ who: 'player', name: g.d.name, mods: dotMods, uptime: uptimeOf(g.startRate / 1000, g.d.procs * g.d.interval) });
+      if (dotMods.length && perSec > 0) nextStates.push({ who: 'player', name: g.d.name, mods: dotMods, uptime: (perSec * g.d.interval) / 1000 });
       notes.push({ who: 'player', kind: 'dot', name: g.d.name, dps });
     }
     enemyDps += dotOnYouDps;
@@ -1376,26 +1880,40 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const lasting = new Map();
     const addLasting = (x, by, perMs) => {
       const d = x.kind === 'turns' ? effectDef(x.effect) : null;
-      if (x.kind !== 'turns' || !d?.mods.some((m) => STATE_STATS.has(m.stat))) {
+      // Effect damage taken and avoidance count too (Pestilent: +500% from Poison for a turn).
+      const counted = (m) => STATE_STATS.has(m.stat) || m.stat === 'EffectDamageTaken' || m.stat === 'EffectAvoidanceChance';
+      if (x.kind !== 'turns' || !d?.mods.some(counted)) {
         if (!['dot', 'stun', 'stacking', 'eot'].includes(x.kind)) unmodelled.add(d?.name ?? x.effect);
         return;
       }
       const who = x.to === 'self' ? by : by === 'player' ? 'enemy' : 'player';
       const turns = x.turns ?? d.turns;
       // On itself it also lasts the rest of the attack it's put on in (Dive's second hit, 1.8s later).
-      const ms = (x.to === 'self' ? turns : Math.max(0.5, turns - 0.5)) * (who === 'player' ? pTurnMs : eTurnMs) + (x.to === 'self' && x.attack ? attackExtraMs(x.attack) : 0);
+      const ms = (x.to === 'self' || x.fullTurns ? turns : Math.max(0.5, turns - 0.5)) * (who === 'player' ? pTurnMs : eTurnMs) + (x.to === 'self' && x.attack ? attackExtraMs(x.attack) : 0);
       const rate = perMs * x.anyPerTurn * (1 - avoids(who === 'player' ? playerFx : enemyFx, x.effect));
       const key = `${who}|${x.effect}`;
-      const s = lasting.get(key) ?? { who, by, onOther: x.to !== 'self', turns, name: d.name, mods: d.mods.filter((m) => STATE_STATS.has(m.stat)), rate: 0, ms: 0 };
+      // On itself when you hit it (Spirit's Evasive): what it changes matters at your next hits, as if you'd put it on.
+      const s = lasting.get(key) ?? { who, by: x.timedBy ?? by, onOther: x.to !== 'self' || !!x.timedBy, turns, name: d.name, mods: d.mods.filter(counted), rate: 0, ms: 0 };
+      // What goes on as it wears off (Starblight, then Starblighted for 5 turns): its turns, its mods,
+      // and whether it keeps the first from landing again meanwhile.
+      const after = d.after ? effectDef(d.after.effect) : null;
+      if (after) {
+        const blocks = after.mods.some((m) => m.stat === 'EffectAvoidanceChance' && m.effect === x.effect && m.value >= 1);
+        s.after = { name: after.name, turns: d.after.turns ?? after.turns, blocks, mods: after.mods.filter((m) => counted(m) && !(m.stat === 'EffectAvoidanceChance' && m.effect === x.effect)) };
+      }
       s.rate += rate;
       s.ms = Math.max(s.ms, ms);
       s.turns = Math.max(s.turns, turns);
       lasting.set(key, s);
     };
     for (const x of pTriggers) addLasting(x, 'player', playerActive * pTurnsPerMs * (x.to === 'target' ? 1 - wardShare : 1));
-    for (const x of eTriggers) addLasting(x, 'enemy', enemyTurnsPerSec / 1000);
+    for (const x of itsTriggers) addLasting(x, 'enemy', enemyTurnsPerSec / 1000);
     for (const s of lasting.values()) {
-      const uptime = uptimeOf(s.rate, s.ms);
+      // Put on the other side, it wears off at the end of one of that side's turns, at no particular
+      // point in the turns of whoever puts it on: the next chance comes half a turn later on average,
+      // not a whole one.
+      const every = s.by === 'player' ? pTurnMs : eTurnMs;
+      const uptime = s.onOther && s.rate > 0 ? clamp(s.ms / (s.ms + Math.max(0, 1 / s.rate - every / 2)), 0, 1) : uptimeOf(s.rate, s.ms);
       if (!(uptime > 0)) continue;
       // Put on the other side by your hit (or its), what lowers its defence only matters at your next
       // hits, which come a whole turn later: the share of them it's up for, not of the time. It's gone
@@ -1413,55 +1931,57 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
         const warm = Number.isFinite(turnsPerKill) && turnsPerKill > 1 ? 1 - 1 / turnsPerKill : 1;
         nextStates.push({ who: s.who, name: s.name, mods: defence, uptime: ((q * covered) / (1 + q * covered)) * warm });
       }
-      const rest = s.mods.filter((m) => !defence.includes(m));
-      if (rest.length) nextStates.push({ who: s.who, name: s.name, mods: rest, uptime });
-      notes.push({ who: s.who, kind: 'turns', name: s.name, share: uptime });
+      // What changes the other side's own attacks (your accuracy and max hit, when it's on you) matters
+      // at those: put on before one of them (`before`: the chance it is, between two), it covers that one and
+      // the next `turns - 1`, and isn't put on again until it's gone, or until what follows it is gone
+      // too. A fight starts with none up, which costs about half a run.
+      const own = s.onOther ? s.mods.filter((m) => !defence.includes(m) && m.stat !== 'EffectDamageTaken') : [];
+      const targetMs = s.who === 'player' ? pTurnMs : eTurnMs;
+      const before = 1 - (1 - Math.min(1, s.rate * every)) ** (targetMs / every);
+      const blocked = s.after?.blocks ? s.after.turns : 0;
+      const runs = 1 + before * (s.turns + blocked - 1);
+      const targetTurns = s.who === 'player' ? attacksPerKill : enemyTurnsPerKill;
+      const start = Number.isFinite(targetTurns) && targetTurns > 0 ? Math.max(0, 1 - (s.turns + blocked + 1) / (2 * targetTurns)) : 1;
+      const ownShare = ((before * s.turns) / runs) * start;
+      if (own.length) nextStates.push({ who: s.who, name: s.name, mods: own, uptime: ownShare });
+      if (s.after?.mods.length) {
+        const afterShare = (s.after.blocks ? (before * s.after.turns) / runs : (before * s.after.turns) / (1 + before * (s.after.turns - 1))) * start;
+        nextStates.push({ who: s.who, name: s.after.name, mods: s.after.mods, uptime: afterShare });
+        notes.push({ who: s.who, kind: 'turns', name: s.after.name, share: afterShare });
+      }
+      const rest = s.mods.filter((m) => !defence.includes(m) && !own.includes(m));
+      if (rest.length) nextStates.push({ who: s.who, name: s.name, mods: rest, uptime, perMs: s.rate });
+      notes.push({ who: s.who, kind: 'turns', name: s.name, share: own.length ? ownShare : uptime });
     }
 
-    // Stacks that build up until the fight ends (ActiveStackingEffect: Off Balance, Quicksand,
-    // Exsanguinate, Deep Wound): the average over a fight of the applications it has, for the next pass.
-    const yourTurnsPerKill = Number.isFinite(killMs) ? attacksPerKill : 0;
-    for (const [list, by] of [[pTriggers, 'player'], [eTriggers, 'enemy']]) {
-      for (const x of list) {
-        const d = x.kind === 'stacking' ? effectDef(x.effect) : null;
-        if (!d || !Number.isFinite(killMs)) continue;
-        const who = x.to === 'self' ? by : by === 'player' ? 'enemy' : 'player';
-        const applied = x.perTurn * (by === 'player' ? yourTurnsPerKill : enemyTurnsPerKill) * (1 - avoids(who === 'player' ? playerFx : enemyFx, x.effect)) * (who === 'enemy' && by === 'player' ? 1 - wardShare : 1);
-        const each = x.stacks ?? d.stacks ?? 1;
-        // Applications spread over the fight: n of them average n / 2 stacks, less once they hit the max.
-        const n = applied * each;
-        const stacks = n <= d.maxStacks ? n / 2 : d.maxStacks - (d.maxStacks * d.maxStacks) / (2 * n);
-        const mods = d.mods.filter((m) => STATE_STATS.has(m.stat) || m.stat === 'EffectDamageTaken').map((m) => ({ ...m, value: m.value * stacks }));
-        if (!(stacks > 0) || !mods.length) {
-          unmodelled.add(d.name);
-          continue;
-        }
-        nextStates.push({ who, name: d.name, mods, uptime: 1 });
-        notes.push({ who, kind: 'stacks', name: d.name, stacks });
-      }
+    for (const st of stacked) {
+      nextStates.push(st);
+      notes.push({ who: st.who, kind: 'stacks', name: st.name, stacks: st.stacks });
     }
     // Damage at the end of each of your turns once it's on you, until the fight ends (Ambush, Storm
     // Surge: ActiveEndOfTurnDamageEffect, not refreshed while it's on), through your resistance and armour.
     let eotOnYouPerKill = 0;
-    for (const x of eTriggers) {
+    for (const x of itsTriggers) {
       const d = x.kind === 'eot' ? effectDef(x.effect) : null;
       if (!d || x.to !== 'target' || !Number.isFinite(killMs)) {
         if (x.kind === 'eot' && !d) unmodelled.add(x.effect);
         continue;
       }
       const q = x.anyPerTurn * (1 - avoids(playerFx, x.effect));
-      const from = d.of === 'target' ? { min: 1, max: playerMax } : { min: Math.round(enemyMaxHit * (passive?.minHitOfMax ?? 0)) || 1, max: enemyMaxHit };
+      const from = d.of === 'target' ? { min: 1, max: playerMax } : { min: Math.round(enemyMaxHit * ((passive?.minHitOfMax ?? 0) + lin('enemy', 'MinHitBasedOnMaxHit'))) || 1, max: enemyMaxHit };
       const roll = d.formula === 'Fixed' ? { min: d.damage, max: d.damage } : d.formula === 'MaxHit' ? { min: Math.trunc(from.max * d.percent), max: Math.trunc(from.max * d.percent) } : { min: Math.trunc(from.min * d.percent), max: Math.trunc(from.max * d.percent) };
-      const takes = Math.max(0, 1 + playerTakes + playerFx('EffectDamageTaken', x.effect) + stateFx('player', x.effect));
+      const takes = Math.max(0, 1 + playerTakes + playerFx('EffectDamageTaken', x.effect) + stateFxNow('player', x.effect));
       const tick = overRoll(roll.min, roll.max, (r) => Math.max(1, Math.trunc(r * takes * (1 - playerRes) - p.armour)));
-      // Your turns left after its turn n puts it on.
+      // Your turns left after its turn n puts it on (its turns come further apart while it's stunned;
+      // once on, it goes off at the end of every turn of yours, stunned or not).
+      const stretch = 1 / (1 - Math.min(0.9, enemyStun));
       let ticks = 0;
       let none = 1;
       for (let n = 1; n * eInterval <= killMs && n < 2000; n++) {
-        ticks += none * q * Math.max(0, (killMs - n * eInterval - (n - 1) * (eTurnMs - eInterval)) / pTurnMs);
+        ticks += none * q * Math.max(0, (killMs - (n * eInterval + (n - 1) * (eTurnMs - eInterval)) * stretch) / pTurnMs);
         none *= 1 - q;
       }
-      const perKill = ticks * tick * (1 - Math.min(0.9, enemyStun));
+      const perKill = ticks * tick;
       eotOnYouPerKill += perKill;
       notes.push({ who: 'player', kind: 'dot', name: d.name, dps: perKill / (killMs / 1000) });
     }
@@ -1487,13 +2007,25 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
     const meanSteal = baseSteal + drains.reduce((t, x) => t + x.share * x.v, 0);
     const otherDamagePerSec = Number.isFinite(killMs) && killMs > 0 ? ((eotOnYouPerKill + reflectOnYouPerKill) * 1000) / killMs : 0;
     // Effect lifesteal (Bloodlands, Crimson Eyes) on its effects' damage, at least 1 a proc too.
-    // Lifesteal on each proc is at least 1, while it has any (always, or while Drain is up).
-    const stealOn = (avg) => (1 - drainShare) * (baseSteal > 0 ? Math.max(1, baseSteal * avg) : 0) + drains.reduce((t, x) => t + x.share * Math.max(1, (baseSteal + x.v) * avg), 0);
-    for (const t of dotTicks) itsEffectHealPerSec += t.perSec * (stealOn(t.avg) + (t.steal > 0 ? Math.max(1, t.steal * t.avg) : 0));
+    // Lifesteal on each proc is at least 1, while it has any (always, or while Drain is up), and a whole
+    // number. A proc from its max hit is the same each time, so that of its average is right; one from
+    // the damage it dealt (Bleed) varies a lot, and what rounding down loses the at-least-1 about gives back.
+    const steals = (steal, t) => Math.max(1, t.fixed ? Math.trunc(steal * t.avg) : steal * t.avg);
+    const stealOn = (t) => (1 - drainShare) * (baseSteal > 0 ? steals(baseSteal, t) : 0) + drains.reduce((u, x) => u + x.share * steals(baseSteal + x.v, t), 0);
+    for (const t of dotTicks) itsEffectHealPerSec += t.perSec * (stealOn(t) + (t.steal > 0 ? steals(t.steal, t) : 0));
     const itsHealPerSec = enemyTurnsPerSec * ((1 - drainShare) * stealPerTurn(baseSteal) + drains.reduce((t, x) => t + x.share * stealPerTurn(baseSteal + x.v), 0))
       + meanSteal * otherDamagePerSec + itsEffectHealPerSec;
+    // Its hits' healing by kind (with Drain up or not), for the next pass's lumps.
+    // Its hits' healing, for the next pass's lumps: each attack's hits, each landing or not and healing
+    // its kind's share of what it deals (with Drain up or not), scaled to the healing a turn.
+    const itsHealHits = {
+      perTurn: (1 - drainShare) * stealPerTurn(baseSteal) + drains.reduce((t, x) => t + x.share * stealPerTurn(baseSteal + x.v), 0),
+      kinds: [{ share: 1 - drainShare, steal: baseSteal }, ...drains.map((x) => ({ share: x.share, steal: baseSteal + x.v }))].filter((k) => k.share > 0 && k.steal > 0),
+      attacks: e.attacks.map((a) => ({ chance: a.chance, hits: a.hits.reduce((t, h) => t + h.count, 0), land: itsLand(a), dealt: byAttack.get(a)?.landed > 0 ? byAttack.get(a).damage / byAttack.get(a).landed : 0 })),
+    };
     if (itsHealPerSec > 0) notes.push({ who: 'enemy', kind: 'heal', name: 'Heals', dps: itsHealPerSec });
 
+    for (const st of nextStates) if (st.uptimeAt) st.uptime = st.uptimeAt(killMs);
     const cycleMs = killMs + spawnMs;
     const killsPerHour = Number.isFinite(cycleMs) ? HOUR_MS / cycleMs : 0;
     const attacksPerHour = killsPerHour * attacksPerKill;
@@ -1519,7 +2051,7 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
       playerHit, playerAvg: landedPerKill > 0 ? (e.hitpoints * (1 - dotShare)) / landedPerKill : 0, playerMax, enemyRes, eInterval, eTurnMs, enemyDps, enemyHitChance, biggestHit, damageRolls, attacksPerKill, killMs,
       killsPerHour, attacksPerHour, xpPerHour, combatXpPerHour, prayerXpPerHour, prayerPointsPerHour, enemyAttacksPerHour,
       enemyHitsPerKill: enemyAttemptsPerKill * enemyHitChance, enemyAttemptsPerKill, enemyTurnsPerSec,
-      enemyAttemptsPerTurn: enemyAttempts, effectHealPerKill, itsHealPerSec, itsHealedPerKill: slimeHealed + itsHealed,
+      enemyAttemptsPerTurn: enemyAttempts, effectHealPerKill, itsHealPerSec, itsHealHits, itsHealedPerKill: slimeHealed + itsHealed,
       damageTakenPerKill: (enemyAttempts > 0 ? (enemyAttemptsPerKill * enemyDamage) / enemyAttempts : 0) + dotOnYouPerKill + reflectOnYouPerKill + eotOnYouPerKill,
       enemyAttackDamagePerHour: (enemyAttempts > 0 ? (enemyAttemptsPerKill * enemyDamage) / enemyAttempts : 0) * killsPerHour,
       landedPerKill: attacksPerKill * pLanded, missedPerKill: attacksPerKill * (pAttempts - pLanded), hitsPerTurn: pAttempts,
@@ -1529,22 +2061,9 @@ export function fight(gd, p, e, { food = null, prayers = gd.player?.prayers ?? [
 
   // Stacking passives (Hivemind, Rage, ...) build up during each fight, and effects come and go: run
   // once, average the stacks that fight would build and take how often each effect is up, then run again.
-  const base = { accuracy: 0, evasion: 0, interval: 0 };
-  let f = run(base);
+  let f = run({});
   if (f.killsPerHour > 0 && (passive?.ramps.length || f.nextStates.length || f.playerStun > 0 || f.itsHealPerSec > 0)) {
-    const adj = { ...base, states: f.nextStates, playerActive: f.playerActive, itsHealPerSec: f.itsHealPerSec };
-    for (const r of passive?.ramps ?? []) {
-      const perFight = r.on === 'playerHit' ? f.landedPerKill
-        : r.on === 'playerMiss' ? f.missedPerKill
-          : r.on === 'enemyHit' ? f.enemyHitsPerKill : f.enemyAttemptsPerKill;
-      const stacks = averageStacks(perFight, r.maxStacks);
-      for (const m of r.mods) {
-        if (m.stat === 'PercentAccuracyRating') adj.accuracy += m.value * stacks;
-        if (m.stat === 'PercentEvasionRating') adj.evasion += m.value * stacks;
-        if (m.stat === 'PercentAttackInterval') adj.interval += m.value * stacks;
-      }
-    }
-    f = run(adj);
+    f = run({ states: f.nextStates, playerActive: f.playerActive, itsHealPerSec: f.itsHealPerSec, itsHealHits: f.itsHealHits, killMs: f.killMs });
   }
 
   const damageTakenPerKill = Number.isFinite(f.killMs) ? f.damageTakenPerKill : 0;

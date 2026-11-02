@@ -1,7 +1,8 @@
 // Alerts the companion sends as desktop notifications while it runs, page open or not: level-ups,
 // goals reached, supplies running out, progress stopping (plan steps done: see route-watcher.js), farming plots
-// ready to harvest, and ranch animals hungry, sick or about to die of age. Off until you switch them on in
-// Settings; the page then leaves desktop notifications to this, so nothing arrives twice.
+// ready to harvest, ranch animals hungry, sick or about to die of age, and rare finds (rare-finds.js).
+// Off until you switch them on in Settings; the page then leaves desktop notifications to this, so
+// nothing arrives twice.
 // The settings live in the companion's own folder (alerts.json next to the history).
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -9,14 +10,15 @@ import { join } from 'node:path';
 import { farmingPlots } from '../engine/farming-plots.js';
 import { playerBonuses, playerState } from '../engine/gamedata.js';
 import { ranchModel } from '../engine/ranch.js';
+import { rareOdds } from '../engine/rare-items.js';
 import { activityKey, currentSupplies, totalXp } from '../engine/supplies.js';
 
-export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, useBonuses: true, checkUpdates: true, goals: [] };
+export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, useBonuses: true, checkUpdates: true, goals: [] };
 
 // Only the known fields, with sane types, so a bad request can't store junk.
 export function cleanSettings(input = {}) {
   const s = { ...DEFAULT_ALERT_SETTINGS };
-  for (const key of ['enabled', 'levelUps', 'runningOut', 'stopped', 'planSteps', 'harvests', 'ranch', 'useBonuses', 'checkUpdates']) if (typeof input[key] === 'boolean') s[key] = input[key];
+  for (const key of ['enabled', 'levelUps', 'runningOut', 'stopped', 'planSteps', 'harvests', 'ranch', 'rareFinds', 'useBonuses', 'checkUpdates']) if (typeof input[key] === 'boolean') s[key] = input[key];
   if (Number.isFinite(input.minutes)) s.minutes = Math.min(Math.max(Math.round(input.minutes), 1), 600);
   if (Array.isArray(input.goals)) {
     s.goals = input.goals
@@ -48,6 +50,18 @@ function ranchProblems(gd, save, at) {
     if (dying.length) out.push({ key: `old:${e.land}`, title: 'Dying of old age within the hour', body: `${e.landName} (${e.name}): ${[...new Set(dying.map((a) => a.name))].join(', ')}. Auto-buy is off, so nothing will replace ${dying.length === 1 ? 'it' : 'them'}.` });
   }
   return out;
+}
+
+// A rare find (rare-finds.js), with the item's best odds: "Rare find: Chef's Hat", "1 in 867 per action,
+// from Chef (Thieving)".
+function findEvent(gd, find) {
+  const odds = rareOdds(gd, find.item);
+  const s = odds?.source;
+  const title = `Rare find: ${gd.itemName(find.item)}${find.count > 1 ? ` (${find.count.toLocaleString()})` : ''}`;
+  if (!s) return { title, body: '' };
+  const from = s.type === 'method' ? `${s.method.name} (${gd.skillName(s.method.skill)})` : s.type === 'enemy' ? s.enemy.name : gd.itemName(s.from);
+  const per = s.type === 'method' ? 'per action' : s.type === 'enemy' ? 'per kill' : 'per chest';
+  return { title, body: `1 in ${Math.max(1, Math.round(1 / odds.p)).toLocaleString()} ${per}, from ${from}` };
 }
 
 export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) {
@@ -92,7 +106,7 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
   }
 
   // A new parse of a save. `before` is the previous parse of the same save (or null).
-  // `save` includes the server's history and measured flows.
+  // `save` includes the server's history and measured flows, and the rare finds since `before`.
   function onSave(id, before, save) {
     const m = memo(id);
     // Only a save written just now means the game is running (not one found when the companion starts).
@@ -108,14 +122,14 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
     const newProblems = problems.filter((p) => !m.ranch.has(p.key));
     m.ranch = new Set(problems.map((p) => p.key));
     if (quiet) return [];
-    const events = [...harvests, ...newProblems.map(({ title, body }) => ({ title, body }))];
+    const events = [...(settings.rareFinds ? (save.finds ?? []).map((f) => findEvent(gd, f)) : []), ...harvests, ...newProblems.map(({ title, body }) => ({ title, body }))];
     const levels = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.level]));
     if (settings.levelUps) {
       for (const s of gd.skills) {
         const was = before.skills[s.id]?.level;
         const nowLevel = save.skills[s.id]?.level;
         if (!was || !nowLevel || nowLevel <= was) continue;
-        events.push({ title: `${s.name} level ${nowLevel}!`, body: nowLevel - was > 1 ? `Up ${nowLevel - was} levels.` : '' });
+        events.push({ title: `${s.name} level ${nowLevel}`, body: nowLevel - was > 1 ? `Up ${nowLevel - was} levels.` : '' });
         for (const g of settings.goals) if (g.skill === s.id && was < g.target && nowLevel >= g.target) events.push({ title: `Goal reached: ${s.name} ${g.target}`, body: `${s.name} is level ${nowLevel} now.` });
       }
     }

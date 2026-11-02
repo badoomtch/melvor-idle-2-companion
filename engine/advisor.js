@@ -1,6 +1,7 @@
 // Recommendations built on top of the rate calculators. Isomorphic.
 import { GP } from './gamedata.js';
 import { computeRates, sustainHours } from './rates.js';
+import { rareOdds } from './rare-items.js';
 
 const needsMaterials = (rates) => rates.inputs.length > 0 || (rates.currencies[GP] ?? 0) < 0;
 // Levels are met and nothing else (an equipped tool, a quest) is needed that the save can't confirm.
@@ -467,9 +468,13 @@ export function simulate(gd, method, levels, xpNow, { hours = Infinity, targetLe
 
 // Bank valuation and selling / processing suggestions.
 export function bankInsights(gd, bank, levels) {
+  // Anything the game asks for anywhere: recipes, shop and upgrade costs, quests, keys and tools, the
+  // ranch, bait, runes (gd.raw.itemUses covers all of those, quest-only recipes included).
   const used = new Set();
   for (const m of gd.methods) for (const i of m.ingredients ?? []) used.add(i.item);
   for (const s of gd.shop) for (const i of s.costs.items) used.add(i.item);
+  for (const u of gd.raw?.itemUpgrades ?? []) for (const i of u.costs.items) used.add(i.item);
+  for (const id of Object.keys(gd.raw?.itemUses ?? {})) used.add(`MelvorBase:${id}`);
 
   const items = Object.entries(bank ?? {})
     .filter(([, qty]) => qty > 0)
@@ -480,8 +485,12 @@ export function bankInsights(gd, bank, levels) {
     .sort((a, b) => b.total - a.total);
   const total = items.reduce((s, x) => s + x.total, 0);
 
-  // Nothing uses these and they are not food, gear or tools.
-  const sellable = items.filter((x) => x.known && x.total > 0 && !x.usedInRecipes && x.tags.length === 0);
+  // Nothing uses these, they aren't food, gear, tools or something to open, and they aren't a rare find
+  // (hard to get back if you change your mind).
+  const what = (id) => gd.items[id] ?? {};
+  const rare = (id) => rareOdds(gd, id)?.rarity && rareOdds(gd, id).rarity.id !== 'uncommon';
+  const sellable = items.filter((x) => x.known && x.total > 0 && !x.usedInRecipes && x.tags.length === 0
+    && !what(x.item).equip && !what(x.item).tool && !what(x.item).heal && !what(x.item).opens && !what(x.item).compost && !what(x.item).bait && !rare(x.item));
   const keepers = items.filter((x) => x.tags.length > 0);
 
   // Recipes you can make right now from bank stock that are worth more than their materials.

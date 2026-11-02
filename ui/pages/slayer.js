@@ -2,7 +2,7 @@
 import { STYLES } from '/engine/combat.js';
 import { bestFightsByEnemy, slayerOverview } from '/engine/slayer.js';
 import { badge, duration, esc, exact, iconImg, num } from '/ui/format.js';
-import { combatRecommendation, STYLE_SKILL } from './combat.js';
+import { combatRecommendation, STYLE_SKILL, styleOptions } from './combat.js';
 import { pageHead, requirementText, stat, table } from './shared.js';
 
 // ---------- Slayer ----------
@@ -29,10 +29,18 @@ export function slayer(ctx) {
   const tasks = masters.filter((m) => m.task).map((m) => {
     const t = m.task;
     const f = t.fight;
+    // Each style with the best gear you own for this enemy; the most kills an hour finishes the task first.
+    const styles = styleOptions(ctx, { target: t.enemy }).filter((x) => !x.why).sort((a, b) => b.r.killsPerHour - a.r.killsPerHour);
+    const top = styles[0];
+    const hoursLeft = top ? t.left / top.r.killsPerHour : t.hoursLeft;
+    const others = styles.slice(1).map((x) => `${x.style} ${num(x.r.killsPerHour)}`).join(', ');
+    const fightWith = top
+      ? `${badge(STYLE_SKILL[top.style], top.style)} ${top.style}<span class="sub">${num(top.r.killsPerHour)} kills/h${others ? ` · ${esc(others)}` : ''}</span><button class="link small" data-action="combatTarget" data-style="${top.style}" data-enemy="${esc(t.enemy.id)}" data-go="#/combat">See the gear</button>`
+      : f ? `${badge(STYLE_SKILL[f.style], f.style)} ${f.style}` : '–';
     return `<tr><td>${iconImg(m.master.icon, 'icon sm')}${esc(m.master.name)}</td>
       <td>${iconImg(t.enemy.icon, 'icon sm')}${esc(t.enemy.name)}<span class="sub">${exact(t.progress)} / ${exact(t.length)} done${f ? ` · ${esc(f.area.name)}` : ''}</span></td>
-      <td>${f ? `${badge(STYLE_SKILL[f.style], f.style)} ${f.style}` : '–'}</td>
-      <td class="num">${Number.isFinite(t.hoursLeft) ? duration(t.hoursLeft) : '–'}</td>
+      <td>${fightWith}</td>
+      <td class="num">${Number.isFinite(hoursLeft) ? duration(hoursLeft) : '–'}</td>
       <td class="num">${num(t.left * (t.xpPerKill ?? 0))}</td>
       <td class="num">${num(t.left * (t.coinsPerKill ?? 0))}</td>
       <td>${advice[t.advice]}${t.advice.startsWith('reroll') ? ` <span class="muted small">${exact(m.master.rerollCost.qty)} ${coinName}</span>` : ''}</td></tr>`;
@@ -61,5 +69,5 @@ export function slayer(ctx) {
     <h2>Your tasks</h2>${table(['Master', 'Task', 'Fight with', '#Time left', '#Slayer XP left', `#${coinName} left`, ''], tasks, 'No tasks right now. Pick a master below.')}
     <h2>Masters</h2><div class="form-row">${sort}</div>
     ${table(['Master', '#Slayer XP/h', `#${coinName}/h`, '#Combat XP/h', '#Task kills', ''], rows)}
-    <p class="small muted" style="margin-top:10px">A master's rate averages every enemy it can assign, fought with your best gear for that enemy (any style). Enemies that can hit you for most of your health count as rerolls. Task kills range from the base length up to base + 3 per Slayer level.</p>`;
+    <p class="small muted" style="margin-top:10px">For each task, "Fight with" is the style that kills fastest with the best gear you own for that enemy, with the other styles' kills an hour beside it. A master's rate averages every enemy it can assign, fought with your best gear for that enemy (any style). Enemies that can hit you for most of your health count as rerolls. Task kills range from the base length up to base + 3 per Slayer level.</p>`;
 }

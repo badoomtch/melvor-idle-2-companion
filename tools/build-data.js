@@ -682,9 +682,11 @@ const dotEffects = effectRegistry('DamageOverTimeEffect');
 const stackEffects = effectRegistry('StackingEffect');
 const healEffects = effectRegistry('EndOfTurnHealingEffect');
 const stunEffects = effectRegistry('StunEffect');
-const TRIGGERS = { WhenHit: 'playerHit', WhenAttackEvaded: 'playerMiss', OnHit: 'enemyHit', OnAttack: 'enemyAttack' };
+const TRIGGERS = { WhenHit: 'playerHit', WhenAttackEvaded: 'playerMiss', OnHit: 'enemyHit', OnAttack: 'enemyAttack', OnFirstAttack: 'enemyTurn' };
+// Other effects a passive puts on you or the enemy itself, by the kind the combat model knows them as.
+const PASSIVE_KINDS = { Stacking: 'stacking', TurnCounting: 'turns', EndOfTurnDamage: 'eot', RandomMagnitude: 'turns' };
 function passiveOf(ids) {
-  const out = { names: [], immuneTo: [], healPerTurn: 0, ramps: [], dots: [], stuns: [], selfStuns: [], minHitOfMax: 0, reflect: 0, effectMods: [] };
+  const out = { names: [], immuneTo: [], healPerTurn: 0, ramps: [], dots: [], stuns: [], selfStuns: [], minHitOfMax: 0, reflect: 0, effectMods: [], applies: [] };
   // Combat effect stats (CombatEffectStats), for effects on (or, for lifesteal, from) the enemy or you.
   const EFFECT_STATS = { AvoidanceChance: 'EffectAvoidanceChance', PercentDamageTaken: 'EffectDamageTaken', EffectLifesteal: 'EffectLifesteal' };
   for (const id of ids ?? []) {
@@ -712,21 +714,32 @@ function passiveOf(ids) {
         continue;
       }
       if (local(c.Character?.Component) !== 'Enemy') continue;
-      // enemyHit: when the enemy hits you. playerHit / playerMiss: when you hit or miss it.
-      // start: once as the fight starts (Petrify, first-attack effects).
-      const on = TRIGGERS[c.Modifier?.Trigger?.Data?.Type] ?? 'start';
+      // enemyHit: when the enemy hits you. playerHit / playerMiss: when you hit or miss it. enemyAttack:
+      // each hit it tries; enemyTurn: the first of each turn. start: once as the fight starts (Petrify).
+      // OnDeath (Gas Ball's Explosive) is left out: it goes on you as it dies and comes off as the fight
+      // ends on the same tick (FightEnded), before any turn of yours ends, so it never does anything.
+      const trigger = local(c.Modifier?.Trigger?.Type);
+      const on = trigger === 'AtStartOfFight' ? 'start' : TRIGGERS[c.Modifier?.Trigger?.Data?.Type];
+      if (!on) continue;
       if (type === 'EndOfTurnHealing' && toSelf) {
         const h = healEffects.get(effect);
         if (local(h?.HealingPerTurn?.Formula?.Type) === 'CurrentHitpoints') out.healPerTurn += h.HealingPerTurn.Formula.Data?.Percent ?? 0;
       } else if (type === 'Stacking' && toSelf) {
         const st = stackEffects.get(effect);
-        if (st) out.ramps.push({ name: st.DisplayName, on, maxStacks: st.MaxStacks ?? 1, mods: (st.Modifiers ?? []).map((m) => ({ stat: m.Stat?.Name, value: m.Value ?? 0 })) });
+        // `effect`: its attacks can put the same stacks on (Grand Boast's Dwarven Pride), one count.
+        if (st) out.ramps.push({ name: st.DisplayName, effect: local(effect), on, maxStacks: st.MaxStacks ?? 1, mods: (st.Modifiers ?? []).map((m) => ({ stat: m.Stat?.Name, value: m.Value ?? 0 })) });
       } else if (type === 'DamageOverTime' && !toSelf) {
         const d = dotEffects.get(effect);
         const f = d?.DamagePerProc?.Formula ?? {};
         if (d) out.dots.push({ name: d.DisplayName, effect: local(effect), on, chance: c.Chance ?? 1, formula: local(f.Type), percent: f.Data?.Percent ?? 0, procs: d.ProcCount ?? 1, interval: d.ProcInterval ?? 1000, maxStacks: d.MaxStacks ?? 1 });
       } else if (type === 'Stun' && !toSelf) {
         out.stuns.push({ effect: local(effect), on, chance: c.Chance ?? 1, turns: stunTurns() });
+      } else if (PASSIVE_KINDS[type] && !(type === 'Stacking' && toSelf) && !(type === 'EndOfTurnDamage' && toSelf)) {
+        // Stacks it puts on you (Acid Burns, Plague Touch, Burning Flame), effects for some turns on you
+        // or itself (Corrupting Touch, Spirit's Evasive, Sand Covered's Blind) and damage at the end of
+        // each of your turns (Acid Burn, Sandstorm).
+        const config = c.Modifier?.Effect?.Data?.Configuration ?? {};
+        out.applies.push({ kind: PASSIVE_KINDS[type], effect: local(effect), on, chance: c.Chance ?? 1, to: toSelf ? 'self' : 'target', ...(config.Turns != null ? { turns: config.Turns } : {}), ...(config.StacksToAdd != null ? { stacks: config.StacksToAdd } : {}) });
       }
     }
   }
@@ -837,6 +850,42 @@ for (const m of methods.filter((x) => x.kind === 'firemaking')) {
   const r = (O.FiremakingRecipe ?? []).find((x) => x.Id === m.id);
   m.events = firemakingEvents.filter((e) => !e.Category || full(e.Category) === full(r?.Category))
     .map((e) => ({ name: e.DisplayName, item: full(e.Reward.Item), chance: e.Chance, qty: e.Reward.Quantity, perSecond: true, requires: normReqs(e.Requirements) }));
+}
+
+// What uses each item, from everywhere the game data asks for one: recipe ingredients (quest-only and
+// locked recipes too), what a recipe, course, area, dungeon or spell needs you to have, quest hand-ins and
+// objectives, ranch food, treats and buildings, hunting bait and traps, runes for spells and imbuements,
+// upgrade, shop and automation costs, the Grain Mill and the anvil. Where an item comes from (products,
+// drops, rewards) doesn't count, and neither do Mastery Guild tasks: they count what you've found, not
+// what you keep. { localItemId: [{ how, name }] }, one entry per kind of use and thing.
+const USE_KEYS = [
+  ['EntryCost', 'entry'], ['RuneCosts', 'runes'], ['AutomationCosts', 'automate'], ['Costs', 'cost'], ['Ingredients', 'make'],
+  ['AccessRequirements', 'needed'], ['UnlockRequirements', 'needed'], ['Requirements', 'needed'], ['Goals', 'quest'],
+  ['Eats', 'ranchFood'], ['Treats', 'ranchTreat'], ['PreferredBait', 'bait'], ['TrapType', 'trap'], ['StorageItems', 'mill'], ['Collectables', 'anvil'],
+];
+const NOT_USES = new Set(['Item', 'MasteryGuildTask', 'MasteryGuildBonus', 'Enemy', 'EquipmentSetBonus', 'CombatArea']);
+const itemUses = {};
+{
+  const seen = new Set();
+  const add = (item, use, type, obj) => {
+    const how = type === 'Quest' ? 'quest' : use;
+    const name = type === 'Quest' ? singular(obj.DisplayName, obj.Id) : nameOf(obj.Id) ?? humanize(local(obj.Id));
+    const key = `${item}|${how}|${type}|${obj.Id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    (itemUses[item] ??= []).push({ how, type, name });
+  };
+  const walk = (node, keys, type, obj) => {
+    if (Array.isArray(node)) return node.forEach((v) => walk(v, keys, type, obj));
+    if (node && typeof node === 'object') return Object.entries(node).forEach(([k, v]) => walk(v, [...keys, k], type, obj));
+    if (typeof node !== 'string' || !itemIds.has(node)) return;
+    const use = USE_KEYS.find(([key]) => keys.includes(key));
+    if (use) add(local(node), use[1], type, obj);
+  };
+  for (const [type, list] of Object.entries(O)) {
+    if (!Array.isArray(list) || NOT_USES.has(type)) continue;
+    for (const obj of list) if (!isLocked(obj)) walk(obj, [], type, obj);
+  }
 }
 
 // Collectables from rare species, for the Mastery tasks that count how many you've found.
@@ -967,6 +1016,12 @@ const combat = {
     ...(O.DamageOverTimeEffect ?? []).map((x) => {
       const f = x.DamagePerProc?.Formula ?? {};
       return [x.Id, { kind: 'dot', name: x.DisplayName, formula: local(f.Type), percent: f.Data?.Percent ?? 0, procs: x.ProcCount ?? 1, interval: x.ProcInterval ?? 1000, maxStacks: x.MaxStacks ?? 1, mods: effectMods(x.Modifiers) }];
+    }),
+    // Random magnitude (Blind, Wind Rider): some turns at a stack count rolled between the two, taken
+    // at its average (ActiveRandomMagnitudeEffect).
+    ...(O.RandomMagnitudeEffect ?? []).map((x) => {
+      const stacks = ((x.DefaultMinStacks ?? 1) + (x.DefaultMaxStacks ?? 1)) / 2;
+      return [x.Id, { kind: 'turns', name: x.DisplayName, positive: !!x.IsPositive, turns: x.DefaultTurns ?? 1, mods: effectMods(x.Modifiers).map((m) => ({ ...m, value: m.value * stacks })) }];
     }),
     ...(O.StackingEffect ?? []).map((x) => [x.Id, { kind: 'stacking', name: x.DisplayName, maxStacks: x.MaxStacks ?? 1, stacks: x.DefaultStacksToAdd ?? 1, mods: effectMods(x.Modifiers) }]),
     ...(O.EndOfTurnDamageEffect ?? []).map((x) => {
@@ -1524,6 +1579,7 @@ const data = {
   auroras,
   astrologyEvents,
   huntingCollectables,
+  itemUses,
   ranchingVariants: ranchingVariantBonuses,
   ranchingEnclosures,
   mining,

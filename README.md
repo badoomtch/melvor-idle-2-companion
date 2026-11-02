@@ -15,16 +15,24 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 **Uses what you already own.** Plans start from your bank. The Toolbelts page and your plan point out tools and potions sitting in your bank that would make something quicker ("Put on Balaclava instead of Fire Wizard Hat: 13% faster"). The Combat page picks the best gear you own for each style.
 
 **Answers the questions you'd otherwise look up:**
-- **Combat:** which enemy gives the most XP or GP per hour with your gear, how likely it is to kill you, what food lasts longest, and which upgrades are within reach and why. When you're fighting something, it works out the best gear for that enemy.
-- **Slayer and dungeons:** whether to keep or reroll a task, and what each dungeon run is worth.
-- **Money:** the best money makers after the cost of materials and food, crafts worth more than their materials, and items that are safe to sell.
+- **Combat:** which style to use against what you're fighting (it compares Melee, Ranged and Magic with your best gear for that enemy, and says why), the best gear you own for it, which enemy gives the most XP or GP per hour, how likely a fight is to kill you, what food lasts longest, and which upgrades are within reach and why.
+- **Slayer and dungeons:** whether to keep or reroll a task, the style that kills each task fastest, and what each dungeon run is worth.
+- **Money:** the best money makers after the cost of materials and food, crafts worth more than their materials, and items nothing in the game uses.
 - **Shop planner:** which upgrades pay for themselves fastest, and whether to buy or make each shop item.
-- **Rare items:** how many you've found of each rarity, everything you only get by chance, where to get it, and how long you'd need for a good chance at your levels. What you're doing now gets its own list of what it can give.
+- **Rare items:** how many you've found of each rarity, everything you only get by chance, where to get it, and how long you'd need for a good chance at your levels. What you're doing now gets its own list of what it can give, and each item says how many tries you've already had and how many players would have one by now. Your rare finds are logged as they happen.
 - **Bank:** how full it is, and the easiest ways to free slots without losing anything you need.
 - **Away planner:** the best thing to leave running while you're away, up to the game's 24-hour offline limit.
-- **Lookup:** where any item comes from, what uses it and what it's worth.
+- **Any item:** point at it anywhere for a card with its picture, stats and what it's worth.
+- **Lookup:** where any item comes from, everything that uses it (recipes, quests, keys and tools, the ranch, traps and bait, gear and food) and what it's worth.
+- **And more:** Mastery Guild ranks and the quickest tasks for them, quests, your own level goals, a completion log, your farming plots, ranch and Grain Mill, your history, and calculators.
 
-**Keeps an eye on things.** It can warn you before food, ammo or materials run out, when nothing is training, and when a step of your plan is done. Warnings can arrive as desktop notifications even with the page closed. The Pop out button gives you a small always-on-top window with what you're doing and what's next.
+**Keeps an eye on things.**
+- Anything that needs you sits at the top of the page until it's sorted: running out of food, ammo, runes or materials, nothing training, no XP for a while, the game not saving, or a full bank.
+- The Overview shows what you're doing (a fight included), how long to your next level, how long your supplies last, and what to make or buy before you start so you can keep going for a few hours.
+- A green dot in the menu marks the pages what you're doing touches, such as Combat while you fight or Rare items when your action can give one you haven't found.
+- When you come back after a while, the Overview sums up what happened: XP and levels gained, gold, rare finds, and whether anything stopped.
+- The same warnings, plus level-ups, rare finds, finished plan steps, ready harvests and hungry ranch animals, can arrive as desktop notifications even with the page closed. Turn them on in Settings.
+- The Pop out button gives you a small always-on-top window with what you're doing, what's next and any warnings.
 
 ## Screenshots
 
@@ -51,7 +59,18 @@ It also fits a narrow window, so you can keep it next to the game:
 
 To stop it, close the black console window.
 
-### macOS and Linux, or running from source
+### macOS and Linux
+
+1. From the [latest release](https://github.com/badoomtch/melvor-idle-2-companion/releases/latest), download the zip for your system:
+   - `MelvorIdle2Companion-macos-apple-silicon.zip` for M1 and newer Macs;
+   - `MelvorIdle2Companion-macos-intel.zip` for older Macs;
+   - `MelvorIdle2Companion-linux.zip` for Linux.
+2. Unzip it and run `MelvorIdle2Companion`.
+   - On a Mac, the first time, macOS blocks it because it isn't signed by Apple. Open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. (On macOS 14 and older you can instead right-click it and choose **Open**.)
+   - On Linux, run `./MelvorIdle2Companion` from a terminal in that folder.
+3. Your browser opens the companion.
+
+### Running from source
 
 1. Install [Node.js](https://nodejs.org) (the LTS version).
 2. Download or clone this repository.
@@ -77,23 +96,27 @@ When the game itself updates, the companion keeps working. If a new game version
 
 ## Is it safe?
 
-- **Your save is only ever read, never changed.** Reading takes a millisecond and can't get in the way of the game's autosave.
+- **Your save is only ever read, never changed.** Reading it takes a moment and never locks the file, so it can't get in the way of the game's autosave.
 - **Nothing about your game leaves your computer.** The page is only reachable from your own computer. The one thing the companion asks the internet is whether there's a newer version on GitHub, and you can turn that off.
 - Your goals and settings stay on your computer.
 
 ## How accurate is it?
 
-Rates follow the game's own formulas: action times, success chances, drop tables, the XP curve and the combat formulas. They include your shop upgrades, toolbelt items, pets, set bonuses, Mastery Guild ranks and, in combat, your gear and prayers.
+Rates follow the game's own formulas: action times, success chances, drop tables, the XP curve and the combat formulas. They include your shop upgrades, toolbelt items (and what the used-up ones cost), pets, set bonuses, Mastery Guild ranks, Astrology nodes, the food in each skill's food slot, bonfires and Auroras and, in combat, your gear, prayers, potions and imbuement.
 
 The **Accuracy** page compares the companion's estimates with what each action really gave you between autosaves. Your plan uses those measurements, so its times reflect how fast you actually play.
 
-A few things aren't counted yet: stacks some enemy passives put on you (Plague Touch, Acid Burns), and your own special attacks when their timing changes from turn to turn (they count at their average).
+Combat is checked against a tick-by-tick simulation of the game's fights across every enemy you can fight, and almost every fight comes within 10%. The one known exception is the Elder Vampire: it heals in streaks while Drain is up, which the companion averages, so its kills come about 11% quicker than in the game.
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Feedback
 
 Found advice that doesn't match the game? [Open an issue](https://github.com/badoomtch/melvor-idle-2-companion/issues) with a screenshot of the page and what you expected. Settings has a **Save my stats file** button that writes your levels and the companion's estimate-vs-real numbers to a file (no character name), which helps a lot.
+
+## Licence
+
+The companion's code is under the [MIT licence](LICENSE): you can use, change and share it, as long as the licence and copyright notice come with it. Melvor Idle 2's icons and game data belong to the game and aren't covered by it.
 
 ## Building it yourself
 

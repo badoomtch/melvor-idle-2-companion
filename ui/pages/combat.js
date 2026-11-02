@@ -110,6 +110,76 @@ export function fightHours(ctx, f, food) {
   return Math.min(last(food, r.foodPerHour ?? 0), last(f.player.ammoId, r.ammoPerHour), ...r.runesPerHour.map((x) => last(x.item, x.perHour)));
 }
 
+// The style an enemy attacks with (its most likely stance), for the combat triangle.
+function enemyStyle(gd, enemy) {
+  const main = [...(enemy.stances ?? [])].sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1))[0];
+  return main ? gd.combat.stances[main.stance]?.style ?? null : null;
+}
+
+// What we recommend: each style with the best gear you own for the same enemy (what you're fighting,
+// or the one you picked), which is best and why. With no enemy in mind, each style's best fight.
+// Each style with the best gear you own for `target` (or its own best fight): its numbers, or why it
+// can't be used. Shared with the Overview's Right now card.
+export function styleOptions(ctx, { skill = null, target = null } = {}) {
+  return STYLES.map((style) => {
+    const rec = combatRecommendation(ctx, style, { skill, targetId: target?.id ?? null });
+    const g = rec?.gear;
+    const r = g?.result;
+    const here = !target || g?.enemy?.id === target.id;
+    const why = !g ? 'no setup you can use' : !here ? `can't fight ${target.name} this way` : r.immune ? `${target?.name ?? g.enemy.name} is immune` : r.risky ? 'too risky with this gear' : null;
+    return { style, g, r, why, xp: why ? 0 : xpOf(r, skill) };
+  });
+}
+
+function adviceCard(ctx, { currentStyle, skill, target }) {
+  const { gd } = ctx;
+  const rows = styleOptions(ctx, { skill, target });
+  const usable = rows.filter((x) => x.xp > 0).sort((a, b) => b.xp - a.xp);
+  if (!usable.length) return '';
+  const best = usable[0];
+  const mine = rows.find((x) => x.style === currentStyle);
+  const unit = `${skill ? `${esc(skillName(ctx, skill))} ` : ''}XP/h`;
+  const on = (x) => (target ? esc(target.name) : esc(x.g.enemy.name));
+  let verdict;
+  if (best.style === currentStyle || (mine?.xp > 0 && best.xp < mine.xp * 1.05)) {
+    const keep = mine?.xp > 0 ? mine : best;
+    verdict = `<div class="verdict good"><strong>${target ? `Keep using ${keep.style} on ${on(keep)}.` : `${keep.style} is your best style: ${on(keep)}.`}</strong>${num(keep.xp)} ${unit} with the best ${keep.style.toLowerCase()} gear you own${usable.length > 1 ? `, the most of any style${best !== keep ? ' (within 5%)' : ''}` : ''}.</div>`;
+  } else {
+    const gain = mine?.xp > 0 ? ` ${pct(best.xp / mine.xp - 1, 0)} more XP.` : '';
+    verdict = `<div class="verdict warn"><strong>Switch to ${best.style}${target ? ` for ${on(best)}` : `: ${on(best)}`}.${gain}</strong>${num(best.xp)} ${unit} with the best ${best.style.toLowerCase()} gear you own${mine?.xp > 0 ? `, against ${num(mine.xp)} with ${mine.style}${target ? '' : ` on ${on(mine)}`}` : mine?.why ? `. ${mine.style}: ${esc(mine.why)}` : ''}.
+      <span class="sub"><button class="link" data-action="combatStyle" data-value="${best.style}">See the ${best.style.toLowerCase()} gear</button></span></div>`;
+  }
+  // Why, in the fight's numbers: against the style you use now (or the next best).
+  const other = best.style !== currentStyle && mine?.xp > 0 ? mine : usable[1];
+  const reasons = [];
+  if (other && target) {
+    const a = other.r;
+    const b = best.r;
+    if (b.hitChance > a.hitChance + 0.03) reasons.push(`you'd hit ${pct(b.hitChance)} of the time instead of ${pct(a.hitChance)}`);
+    if (b.killSeconds < a.killSeconds * 0.95) reasons.push(`kill it in ${secs(b.killSeconds)} instead of ${secs(a.killSeconds)}`);
+    if (a.hpLossPerHour > 0 && b.hpLossPerHour < a.hpLossPerHour * 0.9) reasons.push(`take ${pct(1 - b.hpLossPerHour / a.hpLossPerHour, 0)} less damage`);
+  }
+  // The catch, if there is one: more damage taken means more food.
+  const a0 = other?.r;
+  const downside = target && a0 && best.r.foodPerHour > (a0.foodPerHour ?? 0) * 1.1 && best.r.foodPerHour - (a0.foodPerHour ?? 0) >= 1
+    ? `It takes more food: ${num(best.r.foodPerHour)} an hour instead of ${num(a0.foodPerHour ?? 0)}. ` : '';
+  const es = target ? enemyStyle(gd, target) : null;
+  const edge = es && gd.combat.triangle.find((t) => t.player === best.style && t.enemy === es && t.maxHit > 0);
+  const triangle = edge ? `${best.style} has the edge on ${es.toLowerCase()} attackers like ${esc(target.name)}: ${pct(edge.maxHit, 0)} more max hit and ${pct(edge.resistance, 0)} more damage reduction.` : '';
+  const whyLine = reasons.length || triangle || downside ? `<p class="small" style="margin-top:8px">${reasons.length ? `Against ${esc(other.style)}: ${esc(reasons.join(', '))}. ` : ''}${downside}${triangle}</p>` : '';
+  // The best fight anywhere, when it's clearly more than this one.
+  const anywhere = target ? STYLES.map((style) => combatRecommendation(ctx, style, { skill })).filter((rec) => rec?.gear?.result && !rec.gear.result.risky).map((rec) => ({ style: rec.style, enemy: rec.gear.enemy, xp: xpOf(rec.gear.result, skill) })).sort((a, b) => b.xp - a.xp)[0] : null;
+  const elsewhere = anywhere && anywhere.enemy.id !== target.id && anywhere.xp > best.xp * 1.1
+    ? `<p class="small accent-text" style="margin-top:8px">For more XP anywhere: ${esc(anywhere.enemy.name)} with ${anywhere.style}, ${num(anywhere.xp)} ${unit}. <button class="link" data-action="combatTarget" data-style="${anywhere.style}" data-enemy="${esc(anywhere.enemy.id)}">Show it</button></p>`
+    : '';
+  const body = rows.map((x) => `<tr${x === best ? ' class="best"' : ''}>
+      <td>${x.style}${x.style === currentStyle ? ' <span class="muted small">(equipped)</span>' : ''}${x === best ? ' <span class="pill good">Best</span>' : ''}${!target && x.g ? `<span class="sub muted small">on ${esc(x.g.enemy.name)}</span>` : ''}</td>
+      ${x.why ? `<td colspan="4" class="muted small">${esc(x.why[0].toUpperCase() + x.why.slice(1))}</td>` : `<td class="num">${num(x.xp)}</td><td class="num">${secs(x.r.killSeconds)}</td><td class="num">${pct(x.r.hitChance)}</td><td class="num">${num(x.r.foodPerHour ?? 0)}</td>`}</tr>`);
+  return card(`What we recommend${target ? ` against ${esc(target.name)}` : ''}`, `${verdict}${whyLine}${elsewhere}
+    ${table(['Style', `#${unit}`, '#Kill', '#You hit', '#Food/h'], body)}
+    <p class="small muted" style="margin-top:6px">Each style with the best gear you own ${target ? `for ${esc(target.name)}` : 'for its best fight'}, from your bank and loadouts.</p>`, ' style="margin-bottom:12px"');
+}
+
 export function combat(ctx) {
   const { gd, state } = ctx;
   if (!gd.combat) return `${pageHead('Combat')}<p class="notice warn">This data build has no combat rules. Run <code>npm run build-data</code> again.</p>`;
@@ -139,11 +209,12 @@ export function combat(ctx) {
     return `${head}${styleTabs}${controls}<div class="card empty"><h2>No ${esc(style.toLowerCase())} setup you can use yet</h2><p>${style === 'Ranged' ? 'You need a ranged weapon and matching ammo in your bank.' : style === 'Magic' ? 'You need a magic weapon and the runes for a spell it can cast.' : 'You need a melee weapon you have the levels for.'}</p></div>`;
   }
   return `${head}${styleTabs}${controls}
-    <div class="grid two" style="align-items:start">${gearCard(ctx, rec, saved[style], { skill, food, targeted: !!target, fighting, best: target ? combatRecommendation(ctx, style, { skill }) : null })}</div>
+    ${adviceCard(ctx, { currentStyle, skill, target })}
+    <div class="grid two" style="align-items:start">${gearCard(ctx, rec, saved[style], { skill, food, targeted: !!target, fighting })}</div>
     <div class="grid two" style="align-items:start;margin-top:12px">${upgradesCard(ctx, rec, { skill, food })}${foodCard(ctx, rec, { food, skill })}</div>
     <div style="margin-top:12px">${fightsCard(ctx, rec, { skill, food })}</div>
     <div style="margin-top:12px">${dungeonsCard(ctx, rec, { style, skill, food })}</div>
-    <p class="small muted" style="margin-top:10px">Counts your gear, set bonuses, prayers, potions, pets and mastery, your food's bonus, bonuses that only work on a Slayer task or in an area, area effects, enemy passives and ward, both sides' special attacks hit by hit and what they apply (bleed, poison and burn, stuns and sleep, buffs like Haste or Vanished, for the share of the time they're up), stacks that build up over a fight (Off Balance, Quicksand, Exsanguinate, Deep Wound), damage at the end of your turns (Ambush, Storm Surge), attack reflect both ways, your magic imbuement, enemies healing from what they do to you (lifesteal, Drain, effect lifesteal) and your effect lifesteal, and auto-eat with your HP at each of its attacks. Your own special attacks that take longer some turns than others count at their average. Not counted yet: stacks some enemy passives put on you (Plague Touch, Acid Burns).</p>`;
+    <p class="small muted" style="margin-top:10px">Counts your gear, set bonuses, prayers, potions, pets and mastery, your food's bonus, bonuses that only work on a Slayer task or in an area, area effects, enemy passives and ward, both sides' special attacks hit by hit and what they apply (bleed, poison and burn, stuns and sleep, buffs like Haste or Vanished, for the share of the time they're up), stacks that build up over a fight (Off Balance, Quicksand, Exsanguinate, Deep Wound), damage at the end of your turns (Ambush, Storm Surge), attack reflect both ways, your magic imbuement, enemies healing from what they do to you (lifesteal, Drain, effect lifesteal) and your effect lifesteal, and auto-eat with your HP at each of its attacks. Stacks and effects enemy passives put on you count too (Plague Touch, Acid Burns, Burning Flame), and so does what an effect leaves behind as it wears off (Starblighted after Starblight).</p>`;
 }
 
 // Dungeons you can enter, run with this gear: how long a run takes, the chance of dying in one
@@ -185,7 +256,7 @@ function dungeonsCard(ctx, rec, { style, skill, food }) {
 
 const slotOrder = (gd) => gd.combat.slots.map((s) => s.id);
 
-function gearCard(ctx, rec, saved, { skill, food, targeted, fighting, best }) {
+function gearCard(ctx, rec, saved, { skill, food, targeted, fighting }) {
   const { gd } = ctx;
   const g = rec.gear;
   const p = g.player;
@@ -196,20 +267,56 @@ function gearCard(ctx, rec, saved, { skill, food, targeted, fighting, best }) {
     if (slot) savedBySlot[slot] = id;
   }
   const slots = slotOrder(gd).filter((s) => g.slots[s] || savedBySlot[s]);
+  const vs = rec.fights.find((f) => f.enemy.id === g.enemy.id);
+  // Your loadout against the same enemy, and with one piece changed: why each swap is worth it.
+  const weaponOf = (gear) => gear.find((id) => gd.items[id]?.equip?.type === 'Weapon');
+  const fightWith = (gear, stance) => {
+    const spell = rec.style === 'Magic' ? castableSpells(gd, weaponOf(gear), ctx.levels, ctx.bank)[0] ?? null : null;
+    return fight(gd, buildPlayer(gd, { gear, stance, spell, imbuement: g.imbuement, levels: ctx.levels, darkness: vs.area.darkness, area: vs.area, food }), buildEnemy(gd, vs.enemy), { food });
+  };
+  const mine = saved && vs ? fightWith(saved.gear, saved.stance) : null;
+  const whySwap = (slot, id, was) => {
+    const a = gd.items[id]?.equip ?? {};
+    const b = gd.items[was]?.equip ?? {};
+    const parts = [];
+    if ((a.power ?? 0) !== (b.power ?? 0)) parts.push(`power ${exact(b.power ?? 0)} to ${exact(a.power ?? 0)}`);
+    if ((a.protection ?? 0) !== (b.protection ?? 0)) parts.push(`protection ${exact(b.protection ?? 0)} to ${exact(a.protection ?? 0)}`);
+    // A weapon's speed, and the attack and strength bonuses for this style.
+    const sa = a.stats ?? {};
+    const sb = b.stats ?? {};
+    if (sa.AttackInterval && sb.AttackInterval && sa.AttackInterval !== sb.AttackInterval) parts.push(`attacks every ${(sb.AttackInterval / 1000).toFixed(1)}s to ${(sa.AttackInterval / 1000).toFixed(1)}s`);
+    const attackKeys = { Melee: ['Stab', 'Slash', 'Crush', 'Block'], Ranged: ['Accurate', 'Powerful', 'LongRange'], Magic: ['Offensive', 'Defensive'] }[rec.style] ?? [];
+    const bestAttack = (st) => Math.max(0, ...attackKeys.map((k) => st[`${k}AttackBonus`] ?? 0));
+    if (bestAttack(sa) !== bestAttack(sb)) parts.push(`${rec.style.toLowerCase()} attack bonus ${exact(bestAttack(sb))} to ${exact(bestAttack(sa))}`);
+    const strengthKey = { Melee: 'MeleeStrengthBonus', Ranged: 'RangedStrengthBonus', Magic: 'MagicDamageBonus' }[rec.style];
+    if ((sa[strengthKey] ?? 0) !== (sb[strengthKey] ?? 0)) parts.push(`${rec.style === 'Magic' ? 'magic damage' : 'strength'} bonus ${exact(sb[strengthKey] ?? 0)} to ${exact(sa[strengthKey] ?? 0)}`);
+    const extra = bonusText(a.mods ?? []);
+    if (extra) parts.push(extra);
+    let effect = '';
+    if (mine) {
+      const two = a.alsoOccupies?.includes('Offhand');
+      const gear = [...saved.gear.filter((x) => x !== was && !(two && gd.items[x]?.equip?.type === 'Offhand')), id];
+      const r = fightWith(gear, slot === 'Weapon' ? g.stance : saved.stance);
+      const before = xpOf(mine, skill);
+      const d = before > 0 ? xpOf(r, skill) / before - 1 : 0;
+      const cut = mine.hpLossPerHour > 0 ? 1 - r.hpLossPerHour / mine.hpLossPerHour : 0;
+      const xp = d >= 0.005 ? `${pct(d, 1)} more XP an hour` : d <= -0.005 ? `${pct(-d, 1)} less XP an hour (it pays off with the other swaps)` : 'about the same XP';
+      effect = ` Swapped on its own against ${vs.enemy.name}: ${xp}${cut >= 0.02 ? `, ${pct(cut, 0)} less damage taken` : cut <= -0.02 ? `, ${pct(-cut, 0)} more damage taken` : ''}.`;
+    }
+    return `${gd.itemName(id)} instead of ${was ? gd.itemName(was) : 'nothing'}${parts.length ? `: ${parts.join(', ')}` : ''}.${effect}`;
+  };
   const rows = slots.map((s) => {
     const id = g.slots[s];
     const was = savedBySlot[s];
     const changed = saved && id !== was;
     const qty = s === 'Ammo' && id ? ` <span class="muted small">× ${exact(ctx.bank[id] ?? 0)} in bank</span>` : '';
-    return `<li><span class="muted small slot-name">${esc(gd.combat.slots.find((x) => x.id === s)?.name ?? s)}</span><span>${id ? itemLink(ctx, id) : '<span class="muted">Nothing</span>'}${qty}${changed ? ` <span class="pill accent">swap</span><span class="sub muted small">You use: ${was ? esc(gd.itemName(was)) : 'nothing'}</span>` : ''}</span></li>`;
+    const why = changed && id ? `<span class="why-tip" tabindex="0" role="button" aria-label="Why swap" data-tip="${esc(whySwap(s, id, was))}">?</span>` : '';
+    return `<li><span class="muted small slot-name">${esc(gd.combat.slots.find((x) => x.id === s)?.name ?? s)}</span><span>${id ? itemLink(ctx, id) : '<span class="muted">Nothing</span>'}${qty}${changed ? ` <span class="pill accent">swap</span>${why}<span class="sub muted small">You use: ${was ? esc(gd.itemName(was)) : 'nothing'}</span>` : ''}</span></li>`;
   });
   const st = gd.combat.stances[g.stance];
   const xpTo = st.xp.map((x) => esc(skillName(ctx, x.skill))).join(', ');
-  const vs = rec.fights.find((f) => f.enemy.id === g.enemy.id);
   let compare = '';
   if (saved && vs) {
-    const spell = rec.style === 'Magic' ? castableSpells(gd, saved.gear.find((id) => gd.items[id]?.equip?.type === 'Weapon'), ctx.levels, ctx.bank)[0] ?? null : null;
-    const mine = fight(gd, buildPlayer(gd, { gear: saved.gear, stance: saved.stance, spell, imbuement: g.imbuement, levels: ctx.levels, darkness: vs.area.darkness, area: vs.area, food }), buildEnemy(gd, vs.enemy), { food });
     const a = xpOf(mine, skill);
     const b = xpOf(vs.result, skill);
     const swaps = rows.filter((r) => r.includes('pill accent')).length;
@@ -228,11 +335,7 @@ function gearCard(ctx, rec, saved, { skill, food, targeted, fighting, best }) {
   const target = g.enemy
     ? `<p class="small muted">${onIt ? "Optimised for what you're fighting:" : targeted ? 'Optimised for' : 'Optimised for your best fight:'} <strong>${esc(g.enemy.name)}</strong>${g.area ? ` in ${esc(g.area.name)}` : ''}${targeted ? ` · <button class="link" data-action="combatTarget" data-style="${rec.style}" data-enemy="">Use the best fight instead</button>` : ''}${back}</p>`
     : '';
-  // Aimed at one enemy when another gives clearly more XP with the best gear for it: say so.
-  const bestXp = best?.gear?.enemy && best.gear.enemy.id !== g.enemy?.id ? xpOf(best.gear.result, skill) : 0;
-  const here = g.enemy ? xpOf(g.result, skill) : 0;
-  const better = bestXp > here * 1.1 ? `<p class="small accent-text">${esc(best.gear.enemy.name)} gives more: ${num(bestXp)} XP/h with the best gear for it, against ${num(here)} here.</p>` : '';
-  return card(`Best ${esc(rec.style.toLowerCase())} gear you own`, `${target}${better}<ul class="list-plain gear-list">${rows.join('')}</ul>`)
+  return card(`Best ${esc(rec.style.toLowerCase())} gear you own`, `${target}<ul class="list-plain gear-list">${rows.join('')}</ul>`)
     + card('With this gear', `${compare}
     <p class="small" style="margin-top:8px">Stance: <strong>${esc(st.name)}</strong> <span class="muted">(XP to ${xpTo})</span>${g.spell ? ` · Spell: ${iconImg(g.spell.icon, 'icon sm')}<strong>${esc(g.spell.name)}</strong> <span class="muted">(max hit ${g.spell.maxHit})</span>` : ''}</p>
     ${imbuementText(ctx, rec, vs, { skill, food })}
@@ -309,7 +412,7 @@ const gainText = (row) => [row.gainShare >= 0.002 ? `+${pct(row.gainShare, row.g
 
 // Why an upgrade is better, in the fight's own numbers: kill time, hit chance and max hit, how often it
 // hits you and the food that saves.
-const secs = (s) => (s >= 90 ? duration(s / 3600) : `${s.toFixed(s < 10 ? 1 : 0)}s`);
+export const secs = (s) => (s >= 90 ? duration(s / 3600) : `${s.toFixed(s < 10 ? 1 : 0)}s`);
 function whyText(row) {
   const { enemy, before: a, after: b } = row.why ?? {};
   if (!a || !b) return '';

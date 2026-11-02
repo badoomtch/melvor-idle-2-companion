@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+
+- **Fights show in Right now.** The Overview, the side panel and the pop-out window used to say a fight "isn't analysed yet". They now show it with the gear you have on: XP an hour, a kill every so many seconds, the time to your next level, the risk, and whether another style or your best gear does clearly better. Its food, ammo and runes count as supplies from the first autosave, not after a minute of play.
+- **"What uses it" no longer calls useful items safe to sell.** It only looked at recipes and shop costs, so a Thug Chest Key, gear, ranch treats, quest items and hunting traps all showed "Nothing. Safe to sell". It now covers every place the game asks for an item:
+  - recipes, including the quest-only ones;
+  - keys and tools a target or rock needs;
+  - quest hand-ins and objectives;
+  - ranch food, treats and buildings;
+  - bait and traps, and runes for spells and imbuements;
+  - entry, upgrade, shop and automation costs;
+  - what the item is: gear, food, a toolbelt item, something to open or bury.
+
+  When nothing uses an item, it says so without calling it safe to sell. The Bank page's list is now "Nothing uses these" and leaves out rare finds.
+- **Rare item odds for thieving are per successful steal**, since loot only rolls on a success, with your success rate beside them.
+- **Combat is closer to the game.** Checked against a tick-by-tick simulation of the fights:
+  - Stacks and effects enemy passives put on you now count: Acid Burns, Plague Touch, Burning Flame, Corrupting Touch, Blind and Sandstorm. They were left out, so some enemies hit far harder than shown. A Flamberian Defector does 224k damage a kill, not 46k.
+  - Your percentage protection now counts, and so do Pestilent's extra poison damage and Burning Shield's armour.
+  - Kill times follow your weapon's special attacks hit by hit, so specials that take longer some turns are no longer averaged. Griffin Claws: 3.6s a Golbin, matching the simulation.
+  - Fracture counts its protection and armour cuts separately: +62% kills an hour against Blackstone Roller, not +69%.
+  - Enemies that heal (Silt Mosquito) heal turn by turn against your actual hits, and healing at full HP is lost. Silt Mosquito with a Magic Bow takes 142s, not 117s.
+- **Combat checked against every enemy.** A sweep of almost a thousand fights against the simulation found and fixed:
+  - Starblight covers your whole next attack, and the Starblighted that follows (less max hit and accuracy for 5 turns) now counts. Every Starblight enemy is within 4%, from 8 to 15% off.
+  - Effects an enemy puts on you count by the attacks they cover, not by time.
+  - Avoidance from effects that are up (Poison Weak, Bleed Weak) and Wall of Blood's extra ward count.
+  - Shambling Protection's armour and evasion drop count together.
+  - Damage over time from enemies that hit several times a turn runs hit by hit. Blood Fiend's Bleed was 9% low and Soulsmith Corruptor's Poison 18% low; both are now within 4%.
+  - Enemies that heal come a hit at a time. Silt Mosquito against Fire Wave is within 3%, from 10%.
+  - King Oyadazminis counted one bonus twice and was up to 75% off; it's now within 2%.
+  - Armour breaking follows your hits when your turns vary (Blackstone Golem with a greatsword, 30% off, now 2%).
+  - Stuns end with the fight, a stun no longer cuts Storm Surge short, and a rounding slip in damage over time is fixed.
+- **An empty quiver counts as empty.** An emptied ammo or food slot used to count as one left, so you'd see "under a minute left" instead of "Out of".
+- **Food for skilling is the food you selected.** Thieving and Agility damage now uses the food in that skill's food slot in the game, for its cost and for how long it lasts. It used to use the companion's own pick, so it could warn you'd run out of a food you weren't using. With no food selected, there's no food warning, since the game doesn't eat.
+
+### Added
+
+- **Point at any item to see what it is.** A card shows its picture, stats, what it needs, what it's worth and how many you have, without leaving the page.
+- **Item pages show what an item does.** Gear lists its attack and defence bonuses for each style, strength, attack speed, power, protection, extra bonuses and level requirements. Toolbelt items list their effects, food its healing.
+- **Every item has a picture.** About 300 items have no art in the game itself; they now show the game's own placeholder instead of nothing. Enemies in "Where to get it" have their pictures too.
+- **A ? beside each gear swap says why.** Hover it for what changes (attack speed, attack and strength bonuses, power, protection, extra bonuses) and how much XP that one piece gains on its own against the enemy.
+- **Rare finds.** When you find a Rare, Very rare or Legendary item, the companion logs it and sends a desktop notification (switch it off in Settings). The Rare items page shows your last two finds. The log keeps only the latest 200, so it stays small.
+- **Tries so far.** Each rare item says how many tries you've already had at it, from your save's own counts (successful steals and tries, kills, catches, runs, studies, logs cut, ores mined, chests opened), about how long that took, and how many players would have one by then. The odds now shown are at your level, the same the time is worked out with.
+- **While you were away.** Come back after 30 minutes or more and the Overview sums up what happened: XP and levels gained, gold, rare finds, and whether the game stopped saving, went idle or stopped gaining XP.
+- **Stock up before you start.** The Overview's Supplies card works out what you'd run out of in 1, 2, 4, 8 or 12 hours, and the quickest way to get enough: making it, materials first (ore, bars, arrowtips, shafts and feathers for arrows), or the shop price when it sells it.
+- **A style for each Slayer task.** "Fight with" is now the style that kills fastest with the best gear you own for that enemy, with the other styles' kills an hour beside it and a link to the gear.
+- **Desktop notifications, asked once.** The page asks whether to turn them on, since they're off until you do.
+- **The pop-out window shows the warnings and fights** as the top bar and Right now do.
+- **A Mastery dot in the menu** when your action counts towards an open Mastery Guild task.
+- **An optional tone** when you run out of something or stop gaining XP, switched on in Settings.
+- **An MIT licence**, so others can use and build on the companion's code.
+- **Mac and Linux downloads.** Each release now builds the companion for macOS (Apple Silicon and Intel) and Linux and attaches them to the release.
+- **Warnings in the top bar.** What needs you now sits next to the title until it's sorted:
+  - out of something your action uses, such as arrows, food, runes or materials;
+  - about to run out (within the minutes set in Settings);
+  - nothing training, or no XP for 90 seconds;
+  - the game hasn't saved for a couple of minutes;
+  - a full bank.
+
+  The pop-ups and desktop notifications still come too, but these stay put, so you can't miss them.
+- **The menu shows what you're working on.** A green dot beside a page means what you're doing in the game touches it, whichever page you're on; hover it for why. Combat when you're fighting, Slayer when that's your task, Skills while you train, What next when you're on your plan's step, Rare items when your action can give one you haven't found, and Goals when you're training towards one.
+- **The Combat page recommends a style.** A box at the top compares Melee, Ranged and Magic, each with the best gear you own, against what you're fighting. It says whether to keep your style or switch and how much more XP that gives, then why: hit chance, kill time and damage taken against your current style, any extra food it costs, and the combat triangle when it gives one style the edge. It also names a better fight elsewhere when there is one.
+
 ## 0.4.0
 
 Everything 0.3.0 listed as not modelled, a plan that keeps up with your bank, and more of the game counted.

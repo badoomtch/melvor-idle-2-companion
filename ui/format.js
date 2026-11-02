@@ -68,8 +68,10 @@ export function configureIcons(manifest, skills) {
   skillIconPaths = Object.fromEntries((skills ?? []).map((s) => [s.id, s.icon]));
 }
 export const iconUrl = (resPath) => (resPath && iconManifest[resPath] ? `/ui/${iconManifest[resPath]}` : null);
+const MISSING_ART = 'res://Assets/Icons/missing_artwork.png';
 export function iconImg(resPath, cls = 'icon') {
-  const url = iconUrl(resPath);
+  // Art the game names but doesn't ship (305 items in 0.11.4) shows the game's own placeholder.
+  const url = iconUrl(resPath) ?? (resPath?.startsWith('res://Assets/') ? iconUrl(MISSING_ART) : null);
   return url ? `<img class="${cls}" src="${esc(url)}" alt="" loading="lazy" decoding="async">` : '';
 }
 

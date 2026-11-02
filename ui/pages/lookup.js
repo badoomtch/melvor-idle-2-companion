@@ -1,8 +1,9 @@
 // Lookup: items, methods, enemies, areas and shop purchases.
 import { GP } from '/engine/gamedata.js';
-import { combatLevel, enemyLoot, itemDetails, search, triesFor } from '/engine/lookup.js';
+import { combatLevel, enemyLoot, itemDetails, otherUses, search, triesFor } from '/engine/lookup.js';
 import { computeRates } from '/engine/rates.js';
 import { duration, esc, exact, gp, iconImg, num, pct } from '/ui/format.js';
+import { itemFacts } from './item-info.js';
 import { card, enc, itemLink, methodDetail, methodIcon, methodLink, pageHead, requirementText, signed, skillName, stat, table } from './shared.js';
 
 // ---------- Lookup ----------
@@ -30,7 +31,7 @@ function itemPage(ctx, id) {
   const needs = (list) => (list.length ? ` · needs ${requirementText(ctx, list)}` : '');
   const sources = d.sources.map((s) => {
     if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}</span></li>`;
-    if (s.type === 'enemy') return `<li><a href="#/lookup/enemy/${enc(s.enemy.id)}">${esc(s.enemy.name)}</a> <span class="muted small">${pct(s.chance, s.chance < 0.01 ? 2 : 1)} per kill</span></li>`;
+    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${pct(s.chance, s.chance < 0.01 ? 2 : 1)} per kill</span></li>`;
     if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span></li>`;
     if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span></li>`;
     return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span></li>`;
@@ -41,6 +42,9 @@ function itemPage(ctx, id) {
     if (u.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(u.recipe.name)} <span class="muted small">${exact(u.qty)} a batch</span></li>`;
     return `<li><a href="#/lookup/shop/${enc(u.purchase.id)}">${esc(u.purchase.name)}</a> <span class="muted small">Shop cost × ${u.qty}</span></li>`;
   });
+  // What it is and every other place the game asks for it (keys, quests, the ranch, bait, runes...).
+  const covered = new Set(d.uses.filter((u) => u.type === 'method').map((u) => u.method.name));
+  const other = otherUses(gd, id, covered).map((t) => `<li>${esc(t)}</li>`);
   const owned = ctx.bank?.[id];
   return card(`${iconImg(d.info.icon, 'icon lg')}${esc(d.name)}`, `<dl class="kv">
       <dt>Sells for</dt><dd>${d.info.currency === GP ? `${exact(d.info.sell)} GP` : `${exact(d.info.sell)} ${esc(gd.currencyName(d.info.currency))}`}</dd>
@@ -48,9 +52,13 @@ function itemPage(ctx, id) {
       ${d.info.tags?.length ? `<dt>Type</dt><dd>${esc(d.info.tags.join(', '))}</dd>` : ''}
       ${owned != null ? `<dt>In your bank</dt><dd>${exact(owned)} (${gp(owned * gd.itemValue(id))} GP)</dd>` : ''}
     </dl>
+    ${(() => {
+      const facts = itemFacts(ctx, id);
+      return facts.length ? `<h4 style="margin-top:12px">What it does</h4><ul class="hover-facts">${facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : '';
+    })()}
     <div class="detail-body" style="padding-left:0">
       <div><h4>Where to get it</h4>${sources.length ? `<ul>${sources.join('')}</ul>` : '<p class="muted small">No known source in the demo.</p>'}</div>
-      <div><h4>What uses it</h4>${uses.length ? `<ul>${uses.join('')}</ul>` : '<p class="muted small">Nothing. Safe to sell unless you want to keep it.</p>'}</div>
+      <div><h4>What uses it</h4>${uses.length || other.length ? `<ul>${[...other, ...uses].join('')}</ul>` : `<p class="muted small">${/\(c\)$/.test(d.name) ? 'A collectable. ' : ''}Nothing in the game data uses it: no recipe, quest, upgrade, shop, toolbelt or ranch needs it, and you can't wear, eat or open it. A game update could still add a use.</p>`}</div>
     </div>`);
 }
 

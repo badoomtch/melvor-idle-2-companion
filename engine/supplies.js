@@ -5,6 +5,7 @@
 // Estimated: from the current activity's rates, until there's enough play to measure.
 
 import { currentActivity } from './advisor.js';
+import { currentFight } from './current-fight.js';
 
 const HOUR_MS = 3_600_000;
 
@@ -61,10 +62,37 @@ export function supplyStatus({ flows, stock, estimate = [], activity = '' }) {
     .sort((a, b) => a.hoursLeft - b.hoursLeft);
 }
 
+/**
+ * Stock up before you start: for each supply, how many more you need to keep going for `hours`, and the
+ * quickest way to get them with what you can do now (obtain(): gathering or making, materials first).
+ * @param supplies currentSupplies() rows; index producerIndex(); stock { item: qty } you own
+ * @returns rows still short: { item, need, have, short, get } (get: obtain() result, method null if nothing makes it)
+ */
+export function stockUp(supplies, hours, { index, stock, obtain }) {
+  const pool = new Map(Object.entries(stock ?? {}));
+  const out = [];
+  for (const s of supplies) {
+    const need = Math.ceil(s.perHour * hours);
+    const have = Math.max(0, stock?.[s.item] ?? 0);
+    if (have >= need) continue;
+    // obtain() takes what's in the bank first, then makes the rest, up to five steps deep (ammo is ore,
+    // bars, arrowtips, shafts and feathers away).
+    out.push({ item: s.item, need, have, short: need - have, get: obtain(index, pool, s.item, need, 5) });
+  }
+  return out;
+}
+
 // Supplies for whatever the save says you're doing right now.
 export function currentSupplies(gd, save, levels, stock) {
-  const r = currentActivity(gd, save.header, levels)?.rates;
-  const estimate = r ? [...r.inputs.map((i) => ({ item: i.item, perHour: i.perHour })), ...(r.food ? [{ item: r.food.item, perHour: r.food.perHour }] : [])] : [];
+  const a = currentActivity(gd, save.header, levels);
+  const r = a?.rates;
+  // Food only when one is selected in that skill's food slot: with none, the game doesn't eat.
+  const slot = a?.skill ? save.foods?.[a.skill] : null;
+  const heal = slot ? gd.items[slot]?.heal ?? 0 : 0;
+  const food = r?.hpLossPerHour > 0 && heal > 0 ? [{ item: slot, perHour: r.hpLossPerHour / heal }] : [];
+  // A fight: its food, ammo and runes, worked out with the gear you have on.
+  const fighting = currentFight(gd, save, levels);
+  const estimate = fighting ? fighting.uses : r ? [...r.inputs.map((i) => ({ item: i.item, perHour: i.perHour })), ...food] : [];
   return supplyStatus({ flows: save.flows, stock, estimate, activity: activityKey(save.header) });
 }
 

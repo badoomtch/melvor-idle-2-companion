@@ -38,3 +38,35 @@ test('supply status needs steady use, and estimates until there is a measurement
   assert.equal(activityKey({ activeEntityName: 'Mining', activeActionName: 'Iron' }), 'Mining - Iron');
   assert.equal(activityKey({ activeEntityName: '', activeActionName: '' }), '');
 });
+
+test('food for skilling damage is the food selected in that skill\'s slot, and none when the slot is empty', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createGameData } = await import('../engine/gamedata.js');
+  const { currentSupplies } = await import('../engine/supplies.js');
+  const gd = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
+  // A target you fail sometimes at its own level, so you take damage.
+  const target = gd.methods.find((m) => m.kind === 'thieving' && m.damage > 0 && m.perception >= 100 && !m.requires.some((q) => q.type === 'tool'));
+  const levels = { Thieving: target.level };
+  const save = (foods) => ({ header: { activeEntityName: 'Thieving', activeActionName: target.name }, foods, flows: null });
+  const stock = { 'MelvorBase:Glowfin': 7508 };
+  const withFood = currentSupplies(gd, save({ Thieving: 'MelvorBase:Glowfin' }), levels, stock);
+  assert.deepEqual(withFood.map((s) => s.item), ['MelvorBase:Glowfin']);
+  assert.equal(withFood[0].qty, 7508);
+  assert.deepEqual(currentSupplies(gd, save({}), levels, stock), [], 'nothing selected: the game eats nothing');
+});
+
+test('stock up: how many more of each supply for the time you pick, and the quickest way to get them', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createGameData } = await import('../engine/gamedata.js');
+  const { stockUp } = await import('../engine/supplies.js');
+  const { obtain, producerIndex } = await import('../engine/advisor.js');
+  const gd = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
+  const levels = Object.fromEntries(gd.skills.map((s) => [s.id, 60]));
+  const index = producerIndex(gd, levels);
+  const arrows = 'MelvorBase:SteelArrows';
+  const rows = stockUp([{ item: arrows, perHour: 1000 }, { item: 'MelvorBase:NormalLog', perHour: 10 }], 2, { index, stock: { [arrows]: 500, 'MelvorBase:NormalLog': 1000 }, obtain });
+  assert.equal(rows.length, 1, 'enough logs already');
+  assert.equal(rows[0].short, 1500);
+  assert.ok(rows[0].get.method?.skill === 'Fletching', 'fletched, from ore and feathers up');
+  assert.ok(Number.isFinite(rows[0].get.hours) && rows[0].get.hours > 0);
+});

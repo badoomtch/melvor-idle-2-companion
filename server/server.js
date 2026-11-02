@@ -21,6 +21,7 @@ import { createRouteWatcher } from './route-watcher.js';
 import { createHistoryStore } from './history-store.js';
 import { createNotifier } from './notifier.js';
 import { createObservationStore } from './observations.js';
+import { createFindLog } from './rare-finds.js';
 import { listSaveFiles, resolveSaveDirs } from './save-locator.js';
 import { readSaveFile } from './save-reader.js';
 import { createUpdateCheck, repoFrom } from './update-check.js';
@@ -78,6 +79,8 @@ const xpTable = createXpTable(mechanics.xpTable);
 let saveDirs = resolveSaveDirs(args.saves);
 const historyStore = createHistoryStore(HISTORY_DIR);
 const observations = createObservationStore(HISTORY_DIR);
+// Rare items found between autosaves, kept whether or not alerts are on.
+const finds = createFindLog({ gd: createGameData(data), dir: HISTORY_DIR });
 const notify = createNotifier();
 const alerts = createAlertWatcher({ gd: createGameData(data), dir: HISTORY_DIR, notify });
 // Plans use your own speed from what each action has really given you.
@@ -169,8 +172,14 @@ function refresh() {
         recordObservation(f.id, previous, snapshot, previousStock, entry.stock.at(-1), predicted(before ?? parsed));
         entry.flows = measureFlows(entry.stock);
         historyStore.record(f.id, historyPoint(parsed, snapshot)).catch((e) => console.error(`Could not write history: ${e.message}`));
+        let found = [];
         try {
-          alerts.onSave(f.id, before, { ...parsed, history: entry.history, flows: entry.flows });
+          found = finds.onSave(f.id, before, parsed);
+        } catch (e) {
+          console.error(`Could not check rare finds: ${e.message}`);
+        }
+        try {
+          alerts.onSave(f.id, before, { ...parsed, history: entry.history, flows: entry.flows, finds: found });
         } catch (e) {
           console.error(`Could not check alerts: ${e.message}`);
         }
@@ -339,6 +348,11 @@ const server = createServer(async (req, res) => {
       case '/api/observations': {
         const id = url.searchParams.get('id') || mostRecentSaveId();
         return sendJson(res, { id, actions: id ? await observations.get(id) : {} });
+      }
+      // Rare finds logged for a save, oldest first (the latest FIND_LIMIT).
+      case '/api/finds': {
+        const id = url.searchParams.get('id') || mostRecentSaveId();
+        return sendJson(res, { id, finds: id ? await finds.get(id) : [] });
       }
       case '/api/history': {
         const id = url.searchParams.get('id') || mostRecentSaveId();

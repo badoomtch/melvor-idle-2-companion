@@ -1,8 +1,57 @@
 // Overview: your character, what you are doing right now, supplies and every skill.
-import { bankInsights, currentActivity, rankSkill } from '/engine/advisor.js';
-import { currentSupplies } from '/engine/supplies.js';
+import { bankInsights, currentActivity, obtain, producerIndex, rankSkill } from '/engine/advisor.js';
+import { shopOffer } from '/engine/shop.js';
+import { currentFight } from '/engine/current-fight.js';
+import { currentSupplies, stockUp } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, gp, num, pct } from '/ui/format.js';
-import { card, itemLink, methodLink, noSaveCard, pageHead, signed, skillName, stat } from './shared.js';
+import { awaySummary } from './away-summary.js';
+import { secs, styleOptions } from './combat.js';
+import { card, gatherStep, itemLink, memo, methodLink, noSaveCard, pageHead, saveKey, signed, skillName, stat } from './shared.js';
+
+export const STOCK_HOURS = [1, 2, 4, 8, 12];
+
+// Stock up before you start: what you'd run out of within the time you pick, and the quickest way to
+// get enough (making it, materials first, or the shop when it sells it).
+function stockUpPart(ctx, list) {
+  const { gd, state } = ctx;
+  const hours = state.ui.stockHours;
+  const pick = `<div class="segmented" role="group" aria-label="Keep going for">${STOCK_HOURS.map((h) => `<button data-action="stockHours" data-value="${h}" aria-pressed="${h === hours}">${h}h</button>`).join('')}</div>`;
+  const index = memo('overview:producers', saveKey(ctx), () => producerIndex(gd, ctx.levels));
+  const rows = stockUp(list, hours, { index, stock: ctx.stock, obtain });
+  const wallet = { ...(ctx.save.wallet ?? {}), GoldPieces: ctx.save.wallet?.GoldPieces ?? ctx.save.header?.gp ?? 0 };
+  const line = (r) => {
+    const g = r.get;
+    const make = g.method ? `${[...g.needs, { item: r.item, qty: g.short, method: g.method, makes: g.makes }].map((n) => gatherStep(ctx, n)).join(', then ')} <span class="muted">(about ${duration(g.hours)})</span>` : '';
+    const offer = shopOffer(gd, r.item, r.short, { levels: ctx.levels, purchased: ctx.save.shopPurchases ?? {}, wallet });
+    const buy = offer ? `buy ${exact(offer.qty)} in the <a href="#/shop">shop</a> for ${offer.currencies.map((c) => `${exact(c.qty)} ${esc(gd.currencyName(c.currency))}`).join(' + ')}` : '';
+    const how = make && buy ? `${make[0].toUpperCase()}${make.slice(1)}, or ${buy}.` : make ? `${make[0].toUpperCase()}${make.slice(1)}.` : buy ? `${buy[0].toUpperCase()}${buy.slice(1)}.` : 'Nothing you can do yet makes it, and the shop doesn\'t sell it.';
+    return `<li><span>${itemLink(ctx, r.item)} <span class="muted small">${exact(r.short)} more (${exact(r.have)} of ${exact(r.need)})</span><span class="sub small">${how}</span></span></li>`;
+  };
+  return `<h4 style="margin-top:12px">Stock up to keep going for ${pick}</h4>${rows.length
+    ? `<ul class="list-plain">${rows.map(line).join('')}</ul>`
+    : `<p class="small muted">You have enough for ${hours} hour${hours === 1 ? '' : 's'}.</p>`}`;
+}
+
+// A fight: what it gives with the gear you have on, the time to your next level, the risk, and whether
+// your best gear in any style is clearly better on this enemy (the Combat page has the details).
+function fightCard(ctx, f) {
+  const { gd } = ctx;
+  const r = f.result;
+  const level = ctx.levels[f.skill] ?? 1;
+  const rate = ctx.measured?.[f.skill] || r.xpPerHour[f.skill] || 0;
+  const toNext = rate > 0 && level < gd.levelCap ? gd.xp.levelProgress(ctx.xp[f.skill], gd.levelCap).xpForNext / rate : null;
+  const next = toNext != null ? `<p class="small">${esc(skillName(ctx, f.skill))} ${level + 1} in about ${duration(toNext)}${ctx.measured?.[f.skill] ? ' at your measured rate' : ''}.</p>` : '';
+  const risk = r.risky ? `<div class="verdict warn"><strong>This fight could kill you.</strong>About every ${duration(r.hoursToDeath)} with this gear and food. <a href="#/combat">See safer gear</a></div>` : '';
+  const best = styleOptions(ctx, { target: f.enemy }).filter((x) => x.xp > 0).sort((a, b) => b.xp - a.xp)[0];
+  let verdict = '';
+  if (best && best.xp > r.combatXpPerHour * 1.05) {
+    const what = best.style === f.style ? `Your best ${f.style.toLowerCase()} gear` : `${best.style} with your best gear`;
+    verdict = `<div class="verdict warn"><strong>${what} gives ${pct(best.xp / r.combatXpPerHour - 1, 0)} more XP here.</strong>${num(best.xp)} XP/h against your ${num(r.combatXpPerHour)}. <a href="#/combat">See what to change</a></div>`;
+  } else if (best) {
+    verdict = `<div class="verdict good"><strong>Your best setup for ${esc(f.enemy.name)}.</strong>No style or gear you own does clearly better here.</div>`;
+  }
+  return card('Right now', `<p><strong>Fighting ${esc(f.enemy.name)}</strong> with ${f.style} · ${num(r.combatXpPerHour)} XP/h · a kill every ${secs(r.killSeconds)} · ${signed(r.profitPerHour)} GP/h</p>${next}${risk}${verdict}${boosts(ctx)}`);
+}
 
 // ---------- Overview ----------
 
@@ -29,6 +78,8 @@ function boosts(ctx) {
 }
 
 function activityCard(ctx) {
+  const f = ctx.state.levelSource === 'save' ? currentFight(ctx.gd, ctx.save, ctx.levels) : null;
+  if (f) return fightCard(ctx, f);
   const a = currentActivity(ctx.gd, ctx.save.header, ctx.levels);
   if (!a) return card('Right now', `<p class="muted">Not training anything (or the game was closed between actions).</p>${boosts(ctx)}`);
   if (!a.method) {
@@ -62,7 +113,7 @@ function suppliesCard(ctx) {
   const flows = ctx.save.flows;
   const basis = list.some((x) => x.measured) ? `Measured over your last ${duration((flows?.minutes ?? 0) / 60)} of this action.` : 'Estimated from the action\'s base rates until a few autosaves come in.';
   const rows = list.slice(0, 6).map((x) => `<li><span>${itemLink(ctx, x.item)} <span class="muted small">${num(x.perHour)}/h · ${exact(x.qty)} left</span></span><span class="num${x.hoursLeft * 60 <= minutes ? ' warn-text' : ''}">${x.qty > 0 ? duration(x.hoursLeft) : 'Out'}</span></li>`);
-  return card('Supplies', rows.length ? `<ul class="list-plain">${rows.join('')}</ul><p class="small muted" style="margin-top:8px">${basis} <a href="#/settings">Alerts</a></p>` : '<p class="muted small">Nothing being used up right now.</p>');
+  return card('Supplies', rows.length ? `<ul class="list-plain">${rows.join('')}</ul><p class="small muted" style="margin-top:8px">${basis} <a href="#/settings">Alerts</a></p>${stockUpPart(ctx, list)}` : '<p class="muted small">Nothing being used up right now.</p>');
 }
 
 function skillCard(ctx, s) {
@@ -106,6 +157,7 @@ export function overview(ctx) {
     const h = save.header;
     const bank = ctx.bank ? bankInsights(gd, ctx.bank, ctx.levels) : null;
     html += pageHead(esc(h.characterName || 'Your character'), `${esc(h.gamemode || '')}${h.isDemo ? ' · Demo' : ''} · last saved ${ago(h.timestamp)}`);
+    html += awaySummary(ctx);
     html += `<div class="grid stats">${stat('Total level', exact(h.totalLevel))}${stat('Gold', gp(h.gp))}${stat('Slayer coins', exact(h.slayerCoins))}${stat('Bank value', bank ? gp(bank.total) : '–')}</div>`;
     if (save.newerThanSupported) html += '<p class="notice warn">This save is from a newer game version than the companion knows. Numbers may be off until the companion is updated.</p>';
     if (save.warnings.length) html += `<p class="notice warn">${save.warnings.map(esc).join('<br>')}</p>`;

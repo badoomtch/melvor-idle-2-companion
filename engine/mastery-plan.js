@@ -146,7 +146,8 @@ function timeGoal(gd, goal, remaining, { levels, stock, index, fights }) {
  * @param fights { [style]: { fights: rankFights() rows, stances: stances the recommended weapon has } }
  * @returns [{ skill, status, open: [{ task, label, hours, how, needs, progress }], plan: { hours, tasks } | null }]
  */
-export function masteryPlan(gd, save, levels, { bank = null, fights = null, index = null } = {}) {
+// `only`: plan one skill's guild (the menu asks about the skill you're training).
+export function masteryPlan(gd, save, levels, { bank = null, fights = null, index = null, only = null } = {}) {
   const status = masteryStatus(gd, save, levels);
   const stock = bank ? new Map(Object.entries(bank)) : null;
   const getIndex = () => (index ??= producerIndex(gd, levels));
@@ -182,6 +183,7 @@ export function masteryPlan(gd, save, levels, { bank = null, fights = null, inde
 
   const out = [];
   for (const [skill, st] of Object.entries(status)) {
+    if (only && skill !== only) continue;
     const saved = save?.mastery?.[skill] ?? {};
     const open = [];
     for (const task of gd.raw.mastery[skill].tasks) {

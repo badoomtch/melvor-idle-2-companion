@@ -60,6 +60,8 @@ The companion checks `https://api.github.com/repos/<repository>/releases/latest`
    gh release create v0.4.0 dist/MelvorIdle2Companion.exe --title "0.4.0" --notes "What changed"
    ```
 
+Publishing the release starts the **Release builds** workflow (`.github/workflows/release-builds.yml`). It runs the tests and builds the companion on macOS (Apple Silicon and Intel) and Linux, then attaches `MelvorIdle2Companion-<system>.zip` to the release. You can also run it by hand from the Actions tab for a tag that already has a release.
+
 Players on older versions see "Version 0.4.0 of the companion is out" with a link to the release, within six hours or the next time they start it.
 
 ### Signing

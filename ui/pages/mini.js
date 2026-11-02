@@ -1,11 +1,12 @@
 // The compact always-on-top window.
 import { currentActivity } from '/engine/advisor.js';
+import { currentFight } from '/engine/current-fight.js';
 import { describeStep } from '/engine/route-progress.js';
 import { currentSupplies } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, iconImg, num, pct } from '/ui/format.js';
 import { routeFor } from './route-ui.js';
 import { skillName } from './shared.js';
-import { renderLivePill } from './topbar.js';
+import { renderLivePill, renderTopAlerts } from './topbar.js';
 
 // ---------- Mini window ----------
 
@@ -15,7 +16,20 @@ export function renderMini(ctx) {
   if (!ctx.save) return '<p class="muted">No save yet. Start the game and play for a moment.</p>';
   const a = currentActivity(gd, ctx.save.header, ctx.levels);
   const parts = [`<div class="mini-head"><strong>${esc(ctx.save.header.characterName || 'Melvor')}</strong><span id="mini-live">${renderLivePill(ctx)}</span></div>`];
-  if (a?.skill) {
+  // The same warnings as the top bar: what needs you now.
+  const warnings = renderTopAlerts(ctx);
+  if (warnings) parts.push(`<div class="top-alerts mini-alerts">${warnings}</div>`);
+  const f = state.levelSource === 'save' ? currentFight(gd, ctx.save, ctx.levels) : null;
+  if (f) {
+    const level = ctx.levels[f.skill] ?? 1;
+    const prog = gd.xp.levelProgress(ctx.xp[f.skill], gd.levelCap);
+    const rate = ctx.measured?.[f.skill] || f.result.xpPerHour[f.skill] || 0;
+    const toNext = rate > 0 && level < gd.levelCap ? prog.xpForNext / rate : null;
+    parts.push(`<div class="mini-activity">${badge(f.skill, skillName(ctx, f.skill))}<div><strong>${esc(f.enemy.name)}</strong>
+      <span class="small muted">${esc(skillName(ctx, f.skill))} ${level} · ${esc(f.style)} · ${num(f.result.combatXpPerHour)} XP/h</span></div></div>
+      <div class="bar" role="progressbar" aria-label="Progress to the next level" aria-valuenow="${Math.round(prog.progress * 100)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${(prog.progress * 100).toFixed(1)}%"></span></div>
+      <p class="small muted">${level >= gd.levelCap ? 'Max level' : `${exact(Math.ceil(prog.xpForNext))} XP to ${level + 1}${toNext != null ? ` · ${duration(toNext)}` : ''}`}</p>`);
+  } else if (a?.skill) {
     const level = ctx.levels[a.skill];
     const xp = ctx.xp[a.skill];
     const prog = gd.xp.levelProgress(xp, gd.levelCap);

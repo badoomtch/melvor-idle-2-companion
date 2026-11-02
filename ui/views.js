@@ -22,7 +22,7 @@ import { slayer } from './pages/slayer.js';
 import { toolbeltPage } from './pages/toolbelt-ui.js';
 
 export { renderMini } from './pages/mini.js';
-export { AUTOSAVE_MS, renderLivePill, renderSaveBar, renderTabs, TABS, THEMES } from './pages/topbar.js';
+export { AUTOSAVE_MS, renderLivePill, renderSaveBar, renderTabs, renderTopAlerts, TABS, THEMES, topAlerts } from './pages/topbar.js';
 
 const VIEWS = { overview, next, away, skills, toolbelts: toolbeltPage, mastery: masteryPage, money, bank, shop: shopPlanner, combat, slayer, calculators, lookup: lookupView, rare: rarePage, goals, quests, history: historyView, completion, accuracy, settings };
 

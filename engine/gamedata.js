@@ -292,6 +292,8 @@ export function playerState(save, gd = null) {
     huntingJournal: save?.huntingJournal ? Object.fromEntries(Object.entries(save.huntingJournal).map(([id, j]) => [id, j.level])) : null,
     // Your levels, for choices a rate depends on (trapless hunting needs levels in other skills).
     levels: save?.skills ? saveLevels(save) : null,
+    // The food selected in each skill's own food slot ({ Thieving: item }): what it eats when you take damage.
+    foods: save?.foods ?? null,
     // The fishing bait selected (one is used per catch while you have some).
     fishingBait: save?.fishingBait ?? null,
     // The Astrology nodes you've unlocked, minor and major.
@@ -320,7 +322,8 @@ export function purchaseStatus(gd, p, levels, purchased = {}) {
 // Everything a save shows the player owns: bank, toolbelts and worn or stored combat gear.
 export function ownedItems(save) {
   const owned = { ...(save?.bank?.items ?? {}) };
-  const add = (item, qty) => item && (owned[item] = (owned[item] ?? 0) + Math.max(1, qty ?? 1));
+  // Gear counts as one; a stack (ammo, potions) as what's left in it, so an emptied quiver is 0.
+  const add = (item, qty) => item && (owned[item] = (owned[item] ?? 0) + (qty == null ? 1 : Math.max(0, qty)));
   for (const tools of Object.values(save?.toolbelts ?? {})) for (const t of tools) add(t.item, t.qty);
   for (const set of [save?.combat?.equipped, ...Object.values(save?.combat?.storedLoadouts ?? {})]) for (const s of Object.values(set ?? {})) add(s.item, s.qty);
   return owned;

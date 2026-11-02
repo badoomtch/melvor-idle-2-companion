@@ -105,6 +105,56 @@ function getIndex(gd) {
   return idx;
 }
 
+const humanize = (s) => String(s ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2');
+const NEEDED_FOR = { ThievingRecipe: 'Needed to steal from', CombatArea: 'Needed to enter', Dungeon: 'Needed to enter', MagicSpell: 'Needed to cast',
+  BankNavigationOption: 'Unlocks', CombatNavigationOption: 'Unlocks', SkillNavigationOption: 'Unlocks', LegacySkillNavigationOption: 'Unlocks' };
+
+/**
+ * Everything the game does with an item besides the recipes, upgrades, mill and shop costs the index
+ * lists: what it is (gear, food, a toolbelt item, something to open) and every other place the game data
+ * asks for it (gd.raw.itemUses: keys and tools, quests, the ranch, bait and traps, runes, entry costs).
+ * @param covered names of things already listed (recipes), so they don't show twice
+ * @returns [string] in plain words
+ */
+export function otherUses(gd, itemId, covered = new Set()) {
+  const it = gd.items[itemId];
+  const out = [];
+  // What it is: the game's item capabilities, one tag each (equipment, tool, food, openable, trap, bait,
+  // bury, compost).
+  const tags = new Set(it?.tags ?? []);
+  if (it?.equip) out.push(`Worn in the ${humanize(it.equip.type).toLowerCase()} slot`);
+  if (it?.tool) out.push(`Goes in a toolbelt (${humanize(it.tool.slot)})${it.tool.usedUp ? ', used up as you go' : ''}`);
+  if (it?.heal) out.push(`Food: heals ${it.heal} HP`);
+  if (it?.opens || tags.has('openable')) out.push('Open it from your bank');
+  if (it?.compost || tags.has('compost')) out.push('Compost for farming');
+  if (it?.bait || tags.has('bait')) out.push('Bait for fishing');
+  if (it?.prayerPoints || tags.has('bury')) out.push(`Bury it for ${it?.prayerPoints ? `${it.prayerPoints} ` : ''}prayer points`);
+  if (tags.has('trap')) {
+    const animals = gd.methods.filter((m) => m.kind === 'hunting' && (m.traps ?? []).some((t) => t.item === itemId)).map((m) => m.name);
+    out.push(animals.length ? `A trap for hunting ${animals.slice(0, 3).join(', ')}${animals.length > 3 ? ` and ${animals.length - 3} more` : ''}` : 'A trap for hunting');
+  }
+  for (const u of gd.raw?.itemUses?.[itemId.split(':').pop()] ?? []) {
+    if ((u.how === 'make' && covered.has(u.name)) || (u.how === 'cost' && (u.type === 'ItemUpgrade' || u.type === 'ShopPurchase'))) continue;
+    const text = {
+      make: `Used to make ${u.name}`,
+      cost: u.type.startsWith('RanchingEnclosure') ? `Building ${u.name} on your ranch` : `Pays for ${u.name}`,
+      needed: `${NEEDED_FOR[u.type] ?? 'Needed for'} ${u.name}`,
+      quest: `Needed for the quest ${u.name}`,
+      entry: `Entry cost for ${u.name}`,
+      runes: `Runes for ${u.name}`,
+      automate: `Pays to automate ${u.name}`,
+      ranchFood: `Food on your ranch (${u.name})`,
+      ranchTreat: `A treat on your ranch (${u.name})`,
+      bait: `Preferred bait for hunting ${u.name}`,
+      trap: `A trap for hunting ${u.name}`,
+      mill: `Goes in the ${u.name}`,
+      anvil: `Can be offered at the ${u.name}`,
+    }[u.how] ?? `Used for ${u.name}`;
+    if (!out.includes(text)) out.push(text);
+  }
+  return out;
+}
+
 export function itemDetails(gd, itemId) {
   const { sources, uses } = getIndex(gd);
   return {

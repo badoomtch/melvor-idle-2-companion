@@ -199,7 +199,9 @@ test('effect lifesteal heals you a share of your bleed damage', () => {
   const sapping = fight(gd, { ...claws, effectMods: [...claws.effectMods, { stat: 'EffectLifesteal', value: 0.05, effect: 'Bleed' }] }, wolf);
   const bleed = dry.effects.find((x) => x.who === 'enemy' && x.name === 'Bleed');
   assert.ok(bleed && sapping.hpLossPerHour < dry.hpLossPerHour);
-  close(dry.hpLossPerHour - sapping.hpLossPerHour, 0.05 * bleed.dps * (dry.killSeconds - (claws.interval + 1000) / 1000) * dry.killsPerHour, 0.05);
+  // 5% of each Bleed proc, but at least 1 a proc (ActiveCombatEffect.Damage), and procs are small:
+  // about one a proc, "7.4 to 8.1 a kill" in the simulation of the game's loop.
+  close((dry.hpLossPerHour - sapping.hpLossPerHour) / sapping.killsPerHour, 7.7, 0.15);
 });
 
 test('magic imbuements: once a turn on the first hit that lands, their runes every turn', () => {

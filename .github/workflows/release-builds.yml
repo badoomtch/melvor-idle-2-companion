@@ -23,7 +23,7 @@ jobs:
         include:
           - os: macos-latest
             name: macos-apple-silicon
-          - os: macos-13
+          - os: macos-15-intel
             name: macos-intel
           - os: ubuntu-latest
             name: linux

@@ -8,7 +8,10 @@
 // (Data/Packages/MelvorDemo.json) and keeps each definition's DemoLocked condition. Something is
 // out of the demo when:
 //   - its skill is DemoLocked (Agility, Herblore and Astrology in v0.11.2-alpha.4), or
-//   - the definition is DemoLocked, or the demo package doesn't have it at all;
+//   - the definition is DemoLocked, or the demo package doesn't have it at all, or
+//   - the skill's checked rate table (src/data/skills/<skill>.json) leaves it out or marks it
+//     locked. The package alone misses some: Bone Arrows and Bone Bolts aren't DemoLocked, but
+//     their Slayer Ammo category isn't in the demo's Beastcrafting;
 //   - Grain Mill recipes the same way as skill recipes;
 //   - a shop purchase: it gives or costs an item the demo doesn't have, or needs a locked skill.
 // Quest-only definitions (shown only during a quest step) count as in the demo. Not being locked
@@ -59,8 +62,21 @@ for (const r of recipes.tables.HerbloreRecipe) recipeLock.get('artisan').set(r.I
 // Hunting, Ranching and Astrology come as tables with their own availability.
 for (const kind of ['hunting', 'ranching', 'astrology']) recipeLock.set(kind, new Map(read(`src/data/skills/${kind}.json`).rows.map((r) => [r.id, r.availability !== 'demo'])));
 
+// Each skill's checked rate table, where there is one: recipe id -> in the demo?
+const skillTables = new Map();
+for (const s of skillIndex.skills) {
+  try {
+    const rows = read(`src/data/skills/${s.id}.json`).rows;
+    if (Array.isArray(rows)) skillTables.set(local(s.gameId), new Map(rows.map((r) => [r.id, r.availability === 'demo'])));
+  } catch {
+    // no table for this skill
+  }
+}
+
 const methods = data.methods.filter((m) => {
   if (lockedSkills.has(m.skill)) return true;
+  const checked = skillTables.get(m.skill);
+  if (checked && checked.get(m.id) !== true) return true;
   const table = recipeLock.get(m.kind);
   if (!table) return true; // a kind the demo package has no definitions for (Agility, whose skill is locked)
   return table.get(m.id) ?? true;

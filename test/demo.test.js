@@ -60,6 +60,10 @@ test('demo only: locked methods are never recommended; off, nothing changes', ()
   assert.ok(!on.upcoming.some((x) => gd.demo.methods.has(x.method.key)), "they aren't shown as coming up either");
   const locked = on.all.find((x) => gd.demo.methods.has(x.method.key));
   assert.deepEqual(locked.missing[0], { type: 'locked', label: 'Not available in the demo' });
+  // Bone Arrows and Bone Bolts aren't DemoLocked in the package, but the demo has no Slayer Ammo.
+  const beast = withDemo(() => rankSkill(gd, 'Beastcrafting', all(50)));
+  assert.ok(beast.best && !['BoneArrow', 'BoneBolts'].includes(beast.best.method.id), 'Bone Arrows are not recommended');
+  assert.ok(gd.demo.methods.has('Beastcrafting/BoneArrow') && gd.demo.methods.has('Beastcrafting/BoneBolts'));
   // A skill the demo doesn't have recommends nothing.
   assert.equal(withDemo(() => rankSkill(gd, 'Herblore', levels)).best, null);
 });

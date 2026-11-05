@@ -11,7 +11,8 @@ import { farmingPlots } from '../engine/farming-plots.js';
 import { playerBonuses, playerState } from '../engine/gamedata.js';
 import { ranchModel } from '../engine/ranch.js';
 import { rareOdds } from '../engine/rare-items.js';
-import { activityKey, currentSupplies, totalXp } from '../engine/supplies.js';
+import { stuckFor, stuckText } from '../engine/stuck.js';
+import { activityKey, currentSupplies } from '../engine/supplies.js';
 
 export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, useBonuses: true, checkUpdates: true, goals: [] };
 
@@ -133,9 +134,12 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
         for (const g of settings.goals) if (g.skill === s.id && was < g.target && nowLevel >= g.target) events.push({ title: `Goal reached: ${s.name} ${g.target}`, body: `${s.name} is level ${nowLevel} now.` });
       }
     }
-    if (settings.runningOut) {
+    // Your bank, bonuses and journal: what you use up, and how long a hunting catch takes.
+    if (settings.runningOut || settings.stopped) {
       gd.player = playerState(save, gd);
       gd.playerBonuses = settings.useBonuses ? playerBonuses(gd, save) : null;
+    }
+    if (settings.runningOut) {
       for (const s of currentSupplies(gd, save, levels, gd.player.owned)) {
         const minutes = s.hoursLeft * 60;
         if (minutes <= settings.minutes && !m.low.has(s.item)) {
@@ -151,13 +155,12 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
       const was = activityKey(before.header);
       const nowActivity = activityKey(save.header);
       if (was && !nowActivity) events.push({ title: 'Nothing is training', body: `${was} stopped.` });
-      // Same action for 90 seconds of autosaves without any XP: stuck (bank full, out of materials, ...).
-      const recent = (save.history ?? []).slice(-10);
-      const flat = recent.length >= 10 && recent.at(-1).t - recent[0].t >= 85_000 && totalXp(recent[0]) === totalXp(recent.at(-1));
-      if (nowActivity && flat && m.stuck !== nowActivity) {
+      // The same action without any XP for longer than it normally ever goes: stuck (bank full, out of materials, ...).
+      const stuck = stuckFor(gd, save, levels);
+      if (stuck && m.stuck !== nowActivity) {
         m.stuck = nowActivity;
-        events.push({ title: 'No XP for 90 seconds', body: `${nowActivity} isn't gaining anything. Is it stuck?` });
-      } else if (!flat) {
+        events.push(stuckText(stuck));
+      } else if (!stuck) {
         m.stuck = null;
       }
     }

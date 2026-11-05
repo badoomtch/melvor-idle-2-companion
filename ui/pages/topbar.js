@@ -6,7 +6,8 @@ import { farmingPlots, plotRanges } from '/engine/farming-plots.js';
 import { masteryPlan } from '/engine/mastery-plan.js';
 import { rareItemsFrom } from '/engine/rare-items.js';
 import { describeStep } from '/engine/route-progress.js';
-import { activityKey, currentSupplies, totalXp } from '/engine/supplies.js';
+import { stuckFor, stuckText } from '/engine/stuck.js';
+import { activityKey, currentSupplies } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, iconImg, num } from '/ui/format.js';
 import { doing } from './rare.js';
 import { routeFor } from './route-ui.js';
@@ -79,7 +80,7 @@ export const AUTOSAVE_MS = 10_000;
 const STALE_MS = 120_000;
 
 // What needs you now, for the top bar: out of (or nearly out of) what your action uses, nothing
-// training, no XP for 90 seconds, the game no longer saving, a full bank. Each stays while it's true,
+// training, no XP for longer than the action normally takes, the game no longer saving, a full bank. Each stays while it's true,
 // unlike the pop-ups. When the game has stopped saving, that's the only one: the rest would be stale.
 export function topAlerts(ctx) {
   const { gd, state, save } = ctx;
@@ -97,10 +98,11 @@ export function topAlerts(ctx) {
     if (s.qty <= 0) out.push({ level: 'bad', text: `Out of ${name}`, icon, href: '#/overview', title: `${doing} uses it, and you have none left.` });
     else if (s.hoursLeft * 60 <= state.alerts.minutes) out.push({ level: 'warn', text: `${name}: ${duration(s.hoursLeft)} left`, icon, href: '#/overview', title: `${exact(s.qty)} left at about ${num(s.perHour)} an hour.` });
   }
-  // Same action for 90 seconds of autosaves without any XP: stuck (bank full, nothing to burn, ...).
-  const recent = (save.history ?? []).slice(-10);
-  if (doing && recent.length >= 10 && recent.at(-1).t - recent[0].t >= 85_000 && totalXp(recent[0]) === totalXp(recent.at(-1))) {
-    out.push({ level: 'bad', text: 'No XP for 90 seconds', title: `${doing} isn't gaining anything. Is it stuck?` });
+  // The same action without any XP for longer than it normally ever goes: stuck (bank full, nothing to burn, ...).
+  const stuck = stuckFor(gd, save, ctx.levels);
+  if (stuck) {
+    const { title, body } = stuckText(stuck);
+    out.push({ level: 'bad', text: title, title: body });
   }
   const bank = bankCapacity(gd, save);
   if (bank && bank.free <= 0) out.push({ level: 'warn', text: 'Bank is full', href: '#/bank', title: 'New kinds of item have nowhere to go, so the game stops picking them up.' });

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.2
+
+### Added
+
+- **Item pages show how likely each source is.** Every way to get an item says its chance per action (0.25% per hit, 1 in 400), and the likeliest come first. Thanks to luosky for this one.
+
+### Fixed
+
+- **Typing in a number box no longer jumps the cursor to the start.** Typing 120 in "Level to plan for" gave 21, because the page redrew the box after each key. The box you're typing in now stays as it is: Level to plan for, the Away planner's hours and the Calculators' boxes all type normally, cursor and all.
+- **"No XP" waits as long as the action really takes.** It used to warn after 90 seconds without XP, which a single hunting catch often takes. Now it waits for the longest the action normally goes between XP, slower only 1 time in 10,000. That's about 8 minutes for a Bushland Rabbit, and longer for slower animals, the last stage of a heist or a hard Agility course. Quick actions still warn after 90 seconds. Switching to another action, or closing the game, starts the wait again.
+
 ## 0.4.1
 
 ### Fixed

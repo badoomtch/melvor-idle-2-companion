@@ -383,14 +383,20 @@ export function trainNext(gd, levels, xpBySkill = {}, { bank = null, current = n
 }
 
 // Matches the save header's "current activity" to a method and grades it against the best options.
+// The method the save says is running, when the companion knows it.
+export function activeMethod(gd, header, skill = header?.activeEntityName ? gd.skillIdFromName(header.activeEntityName) : null) {
+  if (!skill) return null;
+  const actionName = String(header.activeActionName ?? '').toLowerCase();
+  // An Agility course with more than one path is named for the course; the save says which path runs.
+  const byPath = header.activePath ? gd.methodByKey.get(`${skill}/${header.activePath}`) : null;
+  return byPath ?? (gd.methodsBySkill[skill] ?? []).find((m) => m.name.toLowerCase() === actionName) ?? null;
+}
+
 export function currentActivity(gd, header, levels) {
   if (!header?.activeEntityName) return null;
   const skill = gd.skillIdFromName(header.activeEntityName);
   if (!skill) return { skill: null, label: [header.activeEntityName, header.activeActionName].filter(Boolean).join(' - ') };
-  const actionName = String(header.activeActionName ?? '').toLowerCase();
-  // An Agility course with more than one path is named for the course; the save says which path runs.
-  const byPath = header.activePath ? gd.methodByKey.get(`${skill}/${header.activePath}`) : null;
-  const method = byPath ?? (gd.methodsBySkill[skill] ?? []).find((m) => m.name.toLowerCase() === actionName) ?? null;
+  const method = activeMethod(gd, header, skill);
   // The path picked in the game's Select Path box, when it isn't the one running (it switches on restart).
   const picked = header.pickedPath && header.pickedPath !== header.activePath ? gd.methodByKey.get(`${skill}/${header.pickedPath}`) ?? null : null;
   const ranked = rankSkill(gd, skill, levels);

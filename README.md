@@ -23,7 +23,7 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 - **Bank:** how full it is, and the easiest ways to free slots without losing anything you need.
 - **Away planner:** the best thing to leave running while you're away, up to the game's 24-hour offline limit.
 - **Any item:** point at it anywhere for a card with its picture, stats and what it's worth.
-- **Lookup:** where any item comes from, everything that uses it (recipes, quests, keys and tools, the ranch, traps and bait, gear and food) and what it's worth.
+- **Lookup:** where any item comes from and how likely each source is, everything that uses it (recipes, quests, keys and tools, the ranch, traps and bait, gear and food) and what it's worth.
 - **And more:** Mastery Guild ranks and the quickest tasks for them, quests, your own level goals, a completion log, your farming plots, ranch and Grain Mill, your history, and calculators.
 
 **Keeps an eye on things.**

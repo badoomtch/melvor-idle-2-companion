@@ -25,15 +25,38 @@ export function expectTable(entries) {
 // the minimum prospecting (0 unless a bonus raises it).
 export function miningExpectedHits(p, start = 0) {
   if (!(p > 0)) return Infinity;
+  const forcedAt = miningForcedHits(p, start);
+  let expected = 0;
+  for (let k = 1; k < forcedAt; k++) expected += k * p * Math.pow(1 - p, k - 1);
+  return expected + forcedAt * Math.pow(1 - p, forcedAt - 1);
+}
+
+// The hit that is sure to break the rock.
+function miningForcedHits(p, start = 0) {
   let forcedAt = 0;
   for (let progress = start; progress < 0.9999; ) {
     forcedAt++;
     progress += p;
   }
-  forcedAt = Math.max(1, forcedAt);
-  let expected = 0;
-  for (let k = 1; k < forcedAt; k++) expected += k * p * Math.pow(1 - p, k - 1);
-  return expected + forcedAt * Math.pow(1 - p, forcedAt - 1);
+  return Math.max(1, forcedAt);
+}
+
+// The slowest an action normally goes without XP, to tell one that's slow from one that's stuck: all
+// but 1 time in 10,000.
+const SLOW_CHANCE = 1e-4;
+
+// Tries until the k-th success at chance p, all but 1 time in 10,000.
+export function slowTries(p, k = 1) {
+  if (!(p > 0)) return Infinity;
+  if (p >= 1) return k;
+  const short = new Array(k).fill(0); // chance of exactly j successes so far, while still short of k
+  short[0] = 1;
+  let n = 0;
+  for (let left = 1; left > SLOW_CHANCE && n < 100_000; n++) {
+    for (let j = k - 1; j >= 0; j--) short[j] = short[j] * (1 - p) + (j ? short[j - 1] * p : 0);
+    left = short.reduce((s, x) => s + x, 0);
+  }
+  return n;
 }
 
 // ThievingActionStats: stealth = floor((level + flat) * (1 + percent)); success = (100 + stealth) / (100 + perception).
@@ -137,7 +160,8 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const x of method.perHit) bump(acc.outputs, x.item, x.chance * x.qty * hits);
       for (const t of gd.usedTools(method)) bump(acc.inputs, t.item, t.usedPer === 'hit' ? hits : 1);
       acc.xp += method.xp * (1 + shatter);
-      return { ms: hits * method.interval, per: { hit: hits }, note: `${hits.toFixed(2)} hits per ore` };
+      const slowHits = method.breakChance > 0 ? Math.min(miningForcedHits(method.breakChance, method.minProspecting ?? 0), slowTries(method.breakChance)) : Infinity;
+      return { ms: hits * method.interval, slowMs: slowHits * method.interval, per: { hit: hits }, note: `${hits.toFixed(2)} hits per ore` };
     }
     case 'fishing': {
       for (const x of expectTable(method.products)) bump(acc.outputs, x.item, method.fishChance * x.qty);
@@ -157,7 +181,7 @@ function cycle(gd, method, level, acc, options = {}) {
       });
       for (const x of specials) bump(acc.outputs, x.item, x.p * x.qty * (1 + (1 - none) * (method.secondSpecialChance ?? 0)));
       acc.xp += method.xp;
-      return { ms: avg(method.minInterval, method.maxInterval), per: { catch: method.fishChance }, note: `${Math.round(method.fishChance * 100)}% fish, rest junk` };
+      return { ms: avg(method.minInterval, method.maxInterval), slowMs: method.maxInterval, per: { catch: method.fishChance }, note: `${Math.round(method.fishChance * 100)}% fish, rest junk` };
     }
     case 'thieving': {
       const s = thievingSuccessChance(gd, method, level, options);
@@ -182,7 +206,10 @@ function cycle(gd, method, level, acc, options = {}) {
       acc.hpLoss += (1 - s) * (1 - (options.damageAvoidance ?? 0)) * (method.damage > 0 ? (method.damage + 1) / 2 : 0);
       for (const t of gd.usedTools(method)) bump(acc.inputs, t.item, 1); // per attempt, success or not
       const stun = Math.floor((gd.mechanics.thievingStunMs ?? 2000) * (1 + (options.percentStunInterval ?? 0)));
-      return { ms: method.interval + (1 - s) * (1 - (options.stunAvoidance ?? 0)) * stun, successChance: s };
+      // A heist only gives XP once all its stages are stolen (ThievingRecipe.Stages); every failure stuns.
+      const tries = slowTries(s, method.stages);
+      const slowMs = tries * method.interval + (tries - method.stages) * (1 - (options.stunAvoidance ?? 0)) * stun;
+      return { ms: method.interval + (1 - s) * (1 - (options.stunAvoidance ?? 0)) * stun, slowMs, successChance: s };
     }
     case 'artisan':
     case 'cooking': {
@@ -192,7 +219,7 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const c of method.currencyCosts) bump(acc.currencies, c.currency, -c.qty);
       for (const x of method.products) bump(acc.outputs, x.item, s * x.chance * x.qty);
       acc.xp += s * method.xp;
-      return { ms: method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
+      return { ms: method.steps * method.interval, slowMs: slowTries(s) * method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
     }
     case 'firemaking': {
       for (const x of method.ingredients) bump(acc.inputs, x.item, x.qty);
@@ -233,6 +260,11 @@ function cycle(gd, method, level, acc, options = {}) {
       else for (let n = method.steps.min; n <= method.steps.max; n++) steps += stepsFor(n) / (method.steps.max - method.steps.min + 1);
       const retrack = (1 - (options.trapReattempt ?? 0)) * stepsFor(method.steps.min);
       const ms = method.surveyInterval * surveys + steps * track + avg(method.trapInterval.min, method.trapInterval.max) * attempts + (attempts - 1) * retrack * track;
+      // The slowest a normal catch gets: every survey, the most steps, and as many trap attempts as
+      // catch it all but 1 time in 10,000.
+      let slowAttempts = 0;
+      for (let miss = 1; miss > SLOW_CHANCE && slowAttempts < 200; slowAttempts++) miss *= 1 - Math.min(1, q0 + slowAttempts * (trap?.failBonus ?? 0));
+      const slowMs = method.surveyInterval * 3 + (undiscovered ? method.steps.max * 4 : method.steps.max) * track + avg(method.trapInterval.min, method.trapInterval.max) * slowAttempts + (slowAttempts - 1) * retrack * track;
       // XP and products scale with the catch's size and weight, which grow with the journal level.
       const journal = options.journalLevel ?? gd.player?.huntingJournal?.[method.id] ?? 1;
       // A rare species doubles every product and adds its own drops (HuntingActionComponent.OnAnimalTrapped).
@@ -251,7 +283,7 @@ function cycle(gd, method, level, acc, options = {}) {
       acc.xp += method.xp * (0.9 + journal / 100);
       // The success chance shows on its own, so the note says how you're hunting.
       const note = [trap ? `${attempts.toFixed(1)} traps tried per catch` : options.trapless ? 'trapless' : null, options.huntingBait ? `with ${gd.itemName(options.huntingBait)}` : null, `journal level ${journal}`, undiscovered ? 'not discovered yet, so 4 times the tracking' : null];
-      return { ms, successChance: q0, note: note.filter(Boolean).join(' · ') };
+      return { ms, slowMs, successChance: q0, note: note.filter(Boolean).join(' · ') };
     }
     case 'agility': {
       // AgilityActionComponent / ActiveAgilityObstacle: obstacles in order; a failure costs HP and
@@ -298,7 +330,11 @@ function cycle(gd, method, level, acc, options = {}) {
       acc.xp += method.xp;
       acc.hpLoss += hp;
       const techniqueNote = method.techniqueXp && method.technique ? `+${method.techniqueXp} ${method.technique} XP per run` : '';
-      return { ms: time, per: { obstacle: obstacles }, successChance: finish, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
+      // XP comes at the end of a run, and a failure starts it again. The time lost to failures comes in
+      // a random number of tries, so its slow end is about ln(10,000) times its average.
+      const cleanMs = steps.reduce((t, s) => t + s.ms, 0);
+      const slowMs = cleanMs + Math.log(1 / SLOW_CHANCE) * Math.max(0, time - cleanMs);
+      return { ms: time, slowMs, per: { obstacle: obstacles }, successChance: finish, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
     }
     case 'ranching': {
       // Per animal per hour (ActiveRanchingAnimal): fed and kept safe, with no treats or pack bonus,
@@ -634,6 +670,8 @@ function baseRates(gd, method, level, options) {
     method,
     level: Math.max(level, method.level),
     msPerCycle: c.ms,
+    // The longest it normally goes between XP gains (all but 1 time in 10,000), for the "No XP" warning.
+    slowMsPerXp: c.passive ? null : c.slowMs ?? c.ms,
     cyclesPerHour: perHour,
     xpPerHour: acc.xp * perHour,
     outputs,

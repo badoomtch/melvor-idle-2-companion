@@ -71,6 +71,23 @@ test('the game going quiet is reported once, but not for an old save found at st
   rmSync(dir, { recursive: true, force: true });
 });
 
+test('no XP is reported after 90 seconds of woodcutting, but a hunting catch gets longer', () => {
+  const { w, sent, done } = watcher({ enabled: true, runningOut: false });
+  const on = (m, secs) => {
+    const h = { timestamp: NOW, activeEntityName: gd.skills.find((s) => s.id === m.skill).name, activeActionName: m.name };
+    const activity = `${h.activeEntityName} - ${m.name}`;
+    const history = Array.from({ length: secs / 10 + 1 }, (_, i) => ({ t: NOW - (secs - i * 10) * 1000, activity, xp: { A: 1 } }));
+    return save({ Woodcutting: 99, Hunting: 99 }, { header: h, history });
+  };
+  const tree = gd.methods.find((m) => m.kind === 'woodcutting');
+  const animal = gd.methods.find((m) => m.kind === 'hunting' && m.level > 1);
+  w.onSave('a', on(animal, 110), on(animal, 120));
+  assert.deepEqual(sent, []);
+  w.onSave('a', on(tree, 80), on(tree, 90));
+  assert.deepEqual(sent.map((s) => s.title), ['No XP for 90 seconds']);
+  done();
+});
+
 test('notification commands escape what they show', () => {
   const [cmd, args] = notificationCommand(`Bob's <level>`, 'a & b', 'win32');
   assert.equal(cmd, 'powershell.exe');

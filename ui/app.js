@@ -2,7 +2,8 @@
 import { currentActivity } from '/engine/advisor.js';
 import { createGameData, playerBonuses, playerCombatMods, playerState } from '/engine/gamedata.js';
 import { playtestReport } from '/engine/playtest-report.js';
-import { activityKey, currentSupplies, totalXp } from '/engine/supplies.js';
+import { stuckFor, stuckText } from '/engine/stuck.js';
+import { activityKey, currentSupplies } from '/engine/supplies.js';
 import { installChartTooltips } from '/ui/charts.js';
 import { configureIcons, duration, esc, exact, iconUrl } from '/ui/format.js';
 import { AUTOSAVE_MS, renderLivePill, renderMini, renderSaveBar, renderTabs, renderTopAlerts, renderView, TABS, THEMES, topAlerts } from '/ui/views.js';
@@ -299,11 +300,18 @@ function newRelease() {
   return `<div class="notice update-ready"><span>Version ${esc(latest.version)} of the companion is out (you have ${esc(state.status.update.current)}). <a href="${esc(latest.url)}" target="_blank" rel="noopener">Download it from GitHub</a></span><button data-action="skipVersion" data-value="${esc(latest.version)}">Not now</button></div>`;
 }
 
+let shownRoute = null;
 function render() {
   const ctx = viewContext();
   const active = document.activeElement;
   const focusId = active?.id && main.contains(active) ? active.id : null;
-  const selection = focusId && (active.type === 'text' || active.type === 'search') ? [active.selectionStart, active.selectionEnd] : null;
+  // A box you're typing in stays the same box through the redraw, so what you've typed and where the
+  // cursor is stay put. A new copy would put the cursor back at the start (number boxes can't be told
+  // where it was), so typing 120 gave 21.
+  // Only on the same page: another page's box of the same name starts from its own value.
+  const route = location.hash;
+  const typing = focusId && route === shownRoute && active.matches('input:not([type=checkbox]):not([type=radio]), textarea') ? active : null;
+  shownRoute = route;
 
   tabsEl.innerHTML = renderTabs(state.route, ctx);
   // Autosaves re-render the top bar; keep the theme menu open if you're looking at it.
@@ -328,9 +336,14 @@ function render() {
 
   if (focusId) {
     const el = document.getElementById(focusId);
-    if (el) {
-      el.focus({ preventScroll: true });
-      if (selection) el.setSelectionRange(...selection);
+    if (el && typing && el !== typing && el.tagName === typing.tagName) {
+      // The redrawn copy's attributes (limits, data) go onto the box you're typing in, which takes its place.
+      for (const a of [...typing.attributes]) if (!el.hasAttribute(a.name)) typing.removeAttribute(a.name);
+      for (const a of [...el.attributes]) typing.setAttribute(a.name, a.value);
+      el.replaceWith(typing);
+      typing.focus({ preventScroll: true });
+    } else {
+      el?.focus({ preventScroll: true });
     }
   }
 }
@@ -457,13 +470,13 @@ function checkAlerts(before, after) {
   const was = activityKey(before.header);
   const now = activityKey(after.header);
   if (was && !now) toast('Nothing is training', `${was} stopped.`);
-  // Same action for 90 seconds of autosaves without any XP: stuck (bank full, nothing to burn, ...).
-  const recent = (after.history ?? []).slice(-10);
-  const flat = recent.length >= 10 && recent.at(-1).t - recent[0].t >= 85_000 && totalXp(recent[0]) === totalXp(recent.at(-1));
-  if (now && flat && alerted.stuck !== now) {
+  // The same action without any XP for longer than it normally ever goes: stuck (bank full, nothing to burn, ...).
+  const stuck = stuckFor(gd, after, ctx.levels);
+  if (stuck && alerted.stuck !== now) {
     alerted.stuck = now;
-    toast('No XP for 90 seconds', `${now} isn't gaining anything. Is it stuck?`);
-  } else if (!flat) {
+    const { title, body } = stuckText(stuck);
+    toast(title, body);
+  } else if (!stuck) {
     alerted.stuck = null;
   }
 }

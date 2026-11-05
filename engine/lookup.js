@@ -58,14 +58,17 @@ export function thievingDrops(method) {
 }
 
 /**
- * The base chance that one action of a method gives an item, from the game data alone (no bonuses,
- * mastery or success roll), and what one action is: a hit, a log, a catch, a steal attempt...
+ * The chance that one action of a method gives an item, and what one action is: a hit, a log, a catch,
+ * a steal attempt... From the method as given: pass computeRates().adjusted for your bonuses.
  * Several rolls for the same item in the same action are combined. 1 means every action gives it.
+ * @param success the success chance: thieving loot and cooked food only come on a success
+ * @param events chances of finds by item (computeRates().chancePerCycle), in place of their base ones
  * @returns {{ chance: number, per: string } | null} null when the method never gives the item
  */
-export function methodChance(method, itemId) {
+export function methodChance(method, itemId, { success = 1, events = null } = {}) {
   const per = { woodcutting: 'log', mining: 'ore', fishing: 'catch', thieving: 'attempt', hunting: 'catch', agility: 'run',
     firemaking: 'burn', farming: 'harvest', ranching: 'hour', cooking: 'cook', astrology: 'action' }[method.kind] ?? 'craft';
+  const gate = method.kind === 'thieving' || method.kind === 'cooking' ? success : 1;
   const rolls = [];
   const roll = (chance, unit = per) => chance > 0 && rolls.push({ chance: Math.min(1, chance), per: unit });
   if (method.product?.item === itemId) roll(1);
@@ -79,15 +82,15 @@ export function methodChance(method, itemId) {
       none *= 1 - x.chance;
     }
   } else if (method.kind === 'thieving') {
-    for (const x of thievingDrops(method)) if (x.item === itemId) roll(x.chance);
+    for (const x of thievingDrops(method)) if (x.item === itemId) roll(gate * x.chance);
   } else {
-    for (const x of method.products ?? []) if (x.item === itemId) roll(x.chance ?? 1);
+    for (const x of method.products ?? []) if (x.item === itemId) roll(gate * (x.chance ?? 1));
   }
   for (const x of method.perHit ?? []) if (x.item === itemId) roll(x.chance ?? 1, 'hit');
   for (const x of method.perCut ?? []) if (x.item === itemId) roll(x.chance ?? 1);
   const weights = (method.rareSpecies ?? []).reduce((s, sp) => s + sp.weight, 0);
   for (const sp of method.rareSpecies ?? []) for (const x of sp.extra) if (x.item === itemId && weights > 0) roll((method.rareChance ?? 0) * (sp.weight / weights) * (x.chance ?? 1));
-  for (const ev of method.events ?? []) if (ev.item === itemId) roll(ev.chance ?? 1);
+  for (const ev of method.events ?? []) if (ev.item === itemId) roll(events?.[ev.item] ?? ev.chance ?? 1);
   if (!rolls.length) return null;
   // Combine the rolls that share a unit; a per-hit roll and a per-log roll can't be added, so keep the likelier.
   const byUnit = new Map();
@@ -129,7 +132,7 @@ function buildIndex(gd) {
     for (const i of recipe.ingredients) push(uses, i.item, { type: 'mill', recipe, qty: i.qty });
   }
   for (const enemy of gd.enemies) {
-    for (const d of enemyLoot(gd, enemy).items) push(sources, d.item, { type: 'enemy', enemy, chance: d.chance });
+    for (const d of enemyLoot(gd, enemy).items) push(sources, d.item, { type: 'enemy', enemy, chance: d.chance, qty: d.qty });
   }
   for (const s of gd.shop) {
     for (const i of s.provides.items) push(sources, i.item, { type: 'shop', purchase: s });

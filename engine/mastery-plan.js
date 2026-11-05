@@ -8,6 +8,7 @@ import { hoursToLevel, obtain, producerIndex } from './advisor.js';
 import { styleOfStance, weaponStyles } from './combat.js';
 import { combatLevel } from './lookup.js';
 import { masteryStatus, taskDone } from './mastery.js';
+import { idleDanger } from './idle-danger.js';
 import { computeRates } from './rates.js';
 
 const localId = (id) => String(id ?? '').split(':').pop();
@@ -15,10 +16,11 @@ const usable = (req) => req.ok && req.unknown.length === 0;
 export const COMBAT_SKILLS = ['Attack', 'Strength', 'Defence', 'Hitpoints', 'Ranged', 'Magic', 'Prayer', 'Slayer'];
 
 // Goal progress per hour on a method: items made when the goal counts output, else finished actions
-// (a cook only counts when it isn't burnt; a Hunting cycle already ends in a catch).
+// (a cook only counts when it isn't burnt, a heist once every stage is stolen; a Hunting cycle already
+// ends in a catch).
 function progressPerHour(rates, output) {
   if (output) return rates.outputs.find((o) => o.item === rates.method.product?.item || o.item === rates.method.products?.[0]?.item)?.perHour ?? 0;
-  return rates.cyclesPerHour * (rates.method.kind === 'cooking' ? rates.successChance ?? 1 : 1);
+  return rates.completionsPerHour ?? rates.cyclesPerHour;
 }
 
 // The main style an enemy attacks with.
@@ -93,10 +95,13 @@ function* goalFights(gd, goal, fights, rate) {
 }
 
 // The quickest way to make `remaining` progress on a goal now: { hours, how } or { hours: null, needs }.
+// Methods that can kill you while left running (idleDanger) are left out like risky fights; when only
+// those can do it, the quickest comes back as `handsOn`, timed as if you eat by hand.
 function timeGoal(gd, goal, remaining, { levels, stock, index, fights }) {
   if (goal.methods || goal.item) {
     const methods = goal.methods ? goal.methods.map((k) => gd.methodByKey.get(k)).filter(Boolean) : methodsGiving(gd, goal.item);
     let best = null;
+    let handsOn = null;
     let needs = null;
     for (const m of methods) {
       const req = gd.checkRequirements(m, levels);
@@ -119,7 +124,13 @@ function timeGoal(gd, goal, remaining, { levels, stock, index, fights }) {
         }
       }
       const hours = work + gather;
-      if (Number.isFinite(hours) && (!best || hours < best.hours)) best = { hours, gatherHours: gather, how: { method: m, perHour: rate } };
+      if (!Number.isFinite(hours)) continue;
+      const danger = idleDanger(gd, rates);
+      if (danger?.risky) {
+        if (!handsOn || hours < handsOn.hours) handsOn = { hours, gatherHours: gather, how: { method: m, perHour: rate }, danger };
+      } else if (!best || hours < best.hours) {
+        best = { hours, gatherHours: gather, how: { method: m, perHour: rate } };
+      }
     }
     // An item that drops in fights you can do safely.
     if (goal.item && fights) {
@@ -128,7 +139,7 @@ function timeGoal(gd, goal, remaining, { levels, stock, index, fights }) {
         if (!best || hours < best.hours) best = { hours, how: { enemy: f.enemy, style, xpPerHour: f.result.xpPerHour } };
       }
     }
-    return best ?? { hours: null, needs };
+    return best ?? { hours: null, needs, ...(handsOn ? { handsOn } : {}) };
   }
   if (goal.enemy || goal.minLevel != null || goal.enemyStyle || goal.measure) {
     let best = null;
@@ -201,6 +212,11 @@ export function masteryPlan(gd, save, levels, { bank = null, fights = null, inde
           const there = Number.isFinite(climb) ? timeGoal(gd, task.goal, task.goal.max - progress, { levels: { ...levels, [t.needs.skill]: t.needs.level }, stock, index: getIndex, fights }) : null;
           if (there?.hours != null) t = { ...there, hours: climb + there.hours, needs: t.needs, climb };
         }
+        // Only something that can kill you left running does it: timed as if you eat by hand, kept out of plans.
+        if (t.hours == null && t.handsOn) {
+          row.handsOn = t.handsOn.danger;
+          t = t.handsOn;
+        }
         row.label = task.goal.label ?? null;
         row.progress = { done: progress, of: task.goal.max };
         row.how = t.how ?? null;
@@ -221,7 +237,11 @@ export function masteryPlan(gd, save, levels, { bank = null, fights = null, inde
           if (!row.progress) row.progress = { done: gd.levelOf(levels, c.skill), of: c.level, level: true };
         } else if (c.type === 'itemStat') {
           const have = save?.statistics?.[c.stat]?.[c.item] ?? save?.statistics?.[c.stat]?.[`MelvorBase:${c.item}`] ?? 0;
-          const t = timeGoal(gd, { item: `MelvorBase:${c.item}` }, Math.max(0, c.value - have), { levels, stock, index: getIndex, fights });
+          let t = timeGoal(gd, { item: `MelvorBase:${c.item}` }, Math.max(0, c.value - have), { levels, stock, index: getIndex, fights });
+          if (t.hours == null && t.handsOn) {
+            row.handsOn ??= t.handsOn.danger;
+            t = t.handsOn;
+          }
           row.label ??= `Get ${c.value.toLocaleString('en-US')} ${gd.itemName(`MelvorBase:${c.item}`)}`;
           row.how ??= t.how ?? null;
           row.needs ??= t.needs ?? null;
@@ -234,6 +254,11 @@ export function masteryPlan(gd, save, levels, { bank = null, fights = null, inde
       }
       if (task.trigger && !s?.triggerMet) row.hours = null;
       if (!row.label) row.hours = null;
+      // A task that can kill you left running stays out of the plan; `handsOnHours` is its time eating by hand.
+      if (row.handsOn) {
+        row.handsOnHours = row.hours;
+        row.hours = null;
+      }
       open.push(row);
     }
     const plan = planRank(open, st.pointsToNext);
@@ -249,6 +274,8 @@ function bestRates(gd, skill, levels, bonuses) {
   let money = null;
   for (const m of gd.methodsBySkill[skill] ?? []) {
     if (!usable(gd.checkRequirements(m, levels))) continue;
+    // Only what you can leave running (your own bonuses say whether it can kill you).
+    if (idleDanger(gd, computeRates(gd, m, level))?.risky) continue;
     const r = computeRates(gd, m, level, { bonuses });
     if (r.xpPerHour > 0 && (!xp || r.xpPerHour > xp.xpPerHour)) xp = r;
     if (!r.passive && (!money || r.profitPerHour > money.profitPerHour)) money = r;

@@ -1294,8 +1294,11 @@ function masteryGoal(g, skill) {
     out.steps = true;
     out.what = `steps of ${nameOf(d.Recipe ?? d.Subcategory ?? d.Category) ?? 'any craft'}`;
   } else if (type === 'ThievingPickpocketTargetType' && d.TargetType) {
+    // Counted when a target is done (ThievingActionComplete): a pickpocket, or a heist once every stage
+    // is stolen. The game says "Successfully complete 10 Heists" or "Successfully steal from 300 NPCs".
     out.methods = matching((r) => full(r.RecipeType) === full(d.TargetType) && (!d.Location || full(r.Category) === full(d.Location)));
-    out.what = `${nameOf(d.TargetType)} targets${d.Location ? ` in ${nameOf(d.Location)}` : ''}`;
+    out.verb = /heist/i.test(local(d.TargetType)) ? 'Complete' : 'Steal from';
+    out.what = `${nameOf(d.TargetType)}${d.Location ? ` in ${nameOf(d.Location)}` : ''}`;
   } else if (type === 'ActionGainItem' && d.Item) {
     out.item = full(d.Item);
     out.what = nameOf(d.Item);
@@ -1328,7 +1331,9 @@ function masteryGoal(g, skill) {
     }
   }
   if (out.methods && !out.methods.length) delete out.methods;
-  if (GOAL_VERBS[type] && out.what) out.label = `${GOAL_VERBS[type]} ${out.max.toLocaleString('en-US')} ${out.what}${out.style ? ` with ${humanize(out.style)}` : ''}`;
+  const verb = out.verb ?? GOAL_VERBS[type];
+  delete out.verb;
+  if (verb && out.what) out.label = `${verb} ${out.max.toLocaleString('en-US')} ${out.what}${out.style ? ` with ${humanize(out.style)}` : ''}`;
   return out;
 }
 const mastery = {};

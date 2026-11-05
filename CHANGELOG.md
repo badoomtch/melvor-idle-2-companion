@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Heist tasks are timed by heists, not attempts.** The game only counts a heist once every stage is stolen, but the Mastery Guild plan counted each pickpocket attempt. At 11.5% success on the Forbidden Library's 10 stages, "Complete 10 Heists in Mage Tower" showed under a minute. It now shows about 1h 13m. These tasks now use the game's wording: "Complete 10 Heists" and "Steal from 300 NPCs" in place of "Pickpocket 10 Heists targets".
+- **Targets that can kill you aren't planned as if you could leave them running.** A failed pickpocket or Agility obstacle can hit for more than the HP where auto-eat tops you up, and then one hit can take you to 0. Dying stops the skill and can lose a toolbelt item. The companion now works this out from your Hitpoints, your auto-eat bonuses and the food picked for that skill. Anything that would kill you within 8 hours is handled like a risky fight:
+  - Mastery Guild plans leave it out. The skill page lists those tasks under "Left out", with their time if you eat by hand.
+  - Training plans pick something else.
+  - Method lists mark it "Could kill you" and don't call it the best. Its details say how big the hits are, when auto-eat eats, and the Hitpoints level from which it's safe.
+- **Item pages give your real chances and put the best source first.** The chances added in 0.4.2 were the game's base numbers, so thieving loot ignored your success chance: a Cursed Circlet from the Forbidden Library showed 1 in 237 attempts when at 11.5% success it's about 1 in 2,000. They also left out your bonuses, and "likeliest first" compared a hit with a steal attempt or a kill. Now every chance counts your success chance and bonuses (cooking counts burnt food too). Each source you can do says how many it gives you an hour, fights included.
+  - Sources are ordered: sure ways (the shop, upgrades, the Grain Mill), then what you can do now, most an hour first, then the rest.
+  - Anything that can kill you comes after the safe ones and is marked.
+  - A source you can't do yet says what it needs.
+
+  For Bird Nests, every tree you can cut (about 9.5 an hour) now comes before the Bandit Woodcutter (2.5 an hour, and it can kill you).
+
 ## 0.4.2
 
 ### Added

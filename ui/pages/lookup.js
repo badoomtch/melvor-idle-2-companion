@@ -3,8 +3,10 @@ import { GP } from '/engine/gamedata.js';
 import { combatLevel, enemyLoot, itemDetails, otherUses, search, triesFor } from '/engine/lookup.js';
 import { computeRates } from '/engine/rates.js';
 import { duration, esc, exact, gp, iconImg, num, pct } from '/ui/format.js';
+import { itemSources } from '/engine/item-sources.js';
 import { itemFacts } from './item-info.js';
-import { card, enc, itemLink, methodDetail, methodIcon, methodLink, pageHead, requirementText, signed, skillName, stat, table } from './shared.js';
+import { fightsByStyle } from './mastery-ui.js';
+import { card, dangerPill, enc, itemLink, memo, methodDetail, methodIcon, methodLink, pageHead, requirementText, saveKey, signed, skillName, stat, table } from './shared.js';
 
 // ---------- Lookup ----------
 
@@ -32,18 +34,23 @@ function chanceText(chance, per) {
   const digits = percent >= 1 ? 1 : Math.min(4, Math.ceil(-Math.log10(percent)) + 1);
   return `${pct(chance, digits)} per ${per}${chance < 0.1 ? ` (1 in ${exact(Math.round(1 / chance))})` : ''}`;
 }
-// Upgrades, the mill and the shop always give the item; sources without a known chance go last.
-const sourceChance = (s) => (s.type === 'enemy' || s.type === 'method' ? s.chance ?? -1 : 1);
+// "12 an hour", "one every 3h 14m": how many a source gives you.
+const rateText = (perHour) => (perHour >= 1 ? `${num(perHour)} an hour` : perHour > 0 ? `one every ${duration(1 / perHour)}` : '');
 
 function itemPage(ctx, id) {
   const { gd } = ctx;
   const d = itemDetails(gd, id);
   if (!d.info) return card('Not found', '<p class="muted">That item isn\'t in the companion data (it may not be in the demo).</p>');
   const needs = (list) => (list.length ? ` · needs ${requirementText(ctx, list)}` : '');
-  // Likeliest source first (a stable sort, so ties keep the game data's order).
-  const sources = [...d.sources].sort((a, b) => sourceChance(b) - sourceChance(a)).map((s) => {
-    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}${s.chance != null ? ` · ${chanceText(s.chance, s.per)}` : ''}</span></li>`;
-    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${chanceText(s.chance, 'kill')}</span></li>`;
+  // Sure ways first, then what you can do now (most an hour first), then the rest (engine/item-sources.js).
+  // Fights are only rated when an enemy drops it: rating every fight takes a moment.
+  const fights = d.sources.some((s) => s.type === 'enemy') ? fightsByStyle(ctx) : null;
+  const list = memo('lookup:sources', `${saveKey(ctx)}|${id}|${!!fights}`, () => itemSources(gd, id, ctx.levels, { fights }));
+  const odds = (s) => [chanceText(s.chance, s.per), s.perHour > 0 ? rateText(s.perHour) : '', s.missing?.length ? `needs ${requirementText(ctx, s.missing)}` : ''].filter(Boolean).join(' · ');
+  const killPill = '<span class="pill bad" title="Your best fight against it can kill you if you leave it running.">Could kill you</span>';
+  const sources = list.map((s) => {
+    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}${odds(s) ? ` · ${odds(s)}` : ''}</span>${s.risky ? ` ${dangerPill(ctx, s.rates)}` : ''}</li>`;
+    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${odds(s)}</span>${s.risky ? ` ${killPill}` : ''}</li>`;
     if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span></li>`;
     if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span></li>`;
     return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span></li>`;
@@ -69,7 +76,7 @@ function itemPage(ctx, id) {
       return facts.length ? `<h4 style="margin-top:12px">What it does</h4><ul class="hover-facts">${facts.map((f) => `<li>${esc(f)}</li>`).join('')}</ul>` : '';
     })()}
     <div class="detail-body" style="padding-left:0">
-      <div><h4>Where to get it</h4>${sources.length ? `<ul>${sources.join('')}</ul>` : '<p class="muted small">No known source in the demo.</p>'}</div>
+      <div><h4>Where to get it</h4>${sources.length ? `<ul>${sources.join('')}</ul><p class="muted small">Chances and amounts are at your levels, with your bonuses and success chance. Sure ways come first, then what you can do now, most an hour first, with anything that can kill you after. Then the rest, likeliest first.</p>` : '<p class="muted small">No known source in the demo.</p>'}</div>
       <div><h4>What uses it</h4>${uses.length || other.length ? `<ul>${[...other, ...uses].join('')}</ul>` : `<p class="muted small">${/\(c\)$/.test(d.name) ? 'A collectable. ' : ''}Nothing in the game data uses it: no recipe, quest, upgrade, shop, toolbelt or ranch needs it, and you can't wear, eat or open it. A game update could still add a use.</p>`}</div>
     </div>`);
 }

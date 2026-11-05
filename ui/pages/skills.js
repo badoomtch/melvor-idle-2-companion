@@ -6,7 +6,7 @@ import { masteryStatus } from '/engine/mastery.js';
 import { ranchModel } from '/engine/ranch.js';
 import { STEP_VERBS } from '/engine/route-progress.js';
 import { badge, duration, esc, exact, iconImg, num, pct } from '/ui/format.js';
-import { masteryPlanFor, rankBonusText, taskLine } from './mastery-ui.js';
+import { handsOnTasks, masteryPlanFor, rankBonusText, taskLine } from './mastery-ui.js';
 import { card, gatherStep, itemLink, memo, methodIcon, methodLink, methodRows, pageHead, saveKey, skillName, stat, table } from './shared.js';
 
 const HOUR_MS = 3_600_000;
@@ -174,7 +174,7 @@ function masteryCard(ctx, skill) {
   return card(`Mastery Guild: ${esc(m.rank?.name ?? 'no rank yet')}`, `
     <div class="bar" role="progressbar" aria-label="Points towards the next rank" aria-valuenow="${Math.round(share * 100)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${(share * 100).toFixed(1)}%"></span></div>
     <p class="small">${exact(m.points)} of ${exact(m.total)} points from ${exact(m.done)} of ${exact(m.tasks)} tasks.${m.next ? ` <strong>${esc(m.next.name)}</strong> at ${exact(nextAt)} points (${exact(m.pointsToNext)} to go)${m.nextBonus ? `: ${esc(effects(m.nextBonus))}` : ''}.` : ' Top rank.'}</p>
-    ${have.length ? `<p class="small muted">Counted in the rates below: ${have.map((b) => `${esc(b.rankName)} (${esc(effects(b))})`).join('; ')}.</p>` : ''}${route}`, ' style="margin-bottom:12px"');
+    ${have.length ? `<p class="small muted">Counted in the rates below: ${have.map((b) => `${esc(b.rankName)} (${esc(effects(b))})`).join('; ')}.</p>` : ''}${route}${m.next ? handsOnTasks(ctx, plan) : ''}`, ' style="margin-bottom:12px"');
 }
 
 // ---------- Skills ----------

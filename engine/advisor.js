@@ -1,5 +1,6 @@
 // Recommendations built on top of the rate calculators. Isomorphic.
 import { GP } from './gamedata.js';
+import { idleDanger } from './idle-danger.js';
 import { computeRates, sustainHours } from './rates.js';
 import { rareOdds } from './rare-items.js';
 
@@ -222,11 +223,12 @@ function pickMethod(gd, skill, levels, level, xp, until, stock, index, prev, pre
   };
   // Fastest first, so a good option turns up early and slower methods can be ruled out before working
   // out their materials (which only ever add time).
+  // Not what can kill you while it runs (a heist whose failures hit harder than auto-eat allows for).
   const options = [];
   for (const method of gd.methodsBySkill[skill] ?? []) {
     if (method.level > level || !usable(gd.checkRequirements(method, lv))) continue;
     const rates = ratesAt(gd, method, level);
-    if (rates.xpPerHour > 0) options.push({ method, rates });
+    if (rates.xpPerHour > 0 && !idleDanger(gd, rates)?.risky) options.push({ method, rates });
   }
   options.sort((a, b) => b.rates.xpPerHour - a.rates.xpPerHour);
   for (const { method, rates } of options) {

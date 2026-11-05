@@ -209,7 +209,10 @@ function cycle(gd, method, level, acc, options = {}) {
       // A heist only gives XP once all its stages are stolen (ThievingRecipe.Stages); every failure stuns.
       const tries = slowTries(s, method.stages);
       const slowMs = tries * method.interval + (tries - method.stages) * (1 - (options.stunAvoidance ?? 0)) * stun;
-      return { ms: method.interval + (1 - s) * (1 - (options.stunAvoidance ?? 0)) * stun, slowMs, successChance: s };
+      // A target counts as done once all its stages are stolen (ThievingActionComplete), which is what
+      // Mastery Guild tasks count: one in stages / success chance attempts.
+      const hits = method.damage > 0 ? { per: 1, rolls: [{ w: (1 - s) * (1 - (options.damageAvoidance ?? 0)), min: 1, max: method.damage }] } : null;
+      return { ms: method.interval + (1 - s) * (1 - (options.stunAvoidance ?? 0)) * stun, slowMs, successChance: s, completes: s / method.stages, hits };
     }
     case 'artisan':
     case 'cooking': {
@@ -219,7 +222,7 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const c of method.currencyCosts) bump(acc.currencies, c.currency, -c.qty);
       for (const x of method.products) bump(acc.outputs, x.item, s * x.chance * x.qty);
       acc.xp += s * method.xp;
-      return { ms: method.steps * method.interval, slowMs: slowTries(s) * method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
+      return { ms: method.steps * method.interval, slowMs: slowTries(s) * method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, completes: s, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
     }
     case 'firemaking': {
       for (const x of method.ingredients) bump(acc.inputs, x.item, x.qty);
@@ -310,12 +313,17 @@ function cycle(gd, method, level, acc, options = {}) {
         return { o, p, attempts, pass: p * attempts, fails: (1 - p) * attempts, ms: Math.floor((o.interval + (options.agilityIntervalFlat ?? 0)) * (1 + (options.agilityIntervalPct ?? 0) + bonus('PercentInterval'))), extraQty: bonus('FlatObstacleRewardQuantity') };
       });
       const finish = steps.reduce((q, s) => q * s.pass, 1);
+      const rolls = [];
       for (const s of steps) {
         const visits = reached / finish; // arrivals at this obstacle per completed run
         time += s.ms * s.attempts * visits;
         obstacles += s.attempts * visits;
         // AgilityActionComponent.ModifyObstacleDamage: damage-taken bonuses scale each hit (at least 1).
-        if (s.o.damage > 0) hp += s.fails * visits * (1 - (options.agilityAvoidDamage ?? 0)) * Math.max(1, ((s.o.damage + 1) / 2) * (1 + (options.agilityDamageTaken ?? 0)));
+        if (s.o.damage > 0) {
+          const landed = s.fails * visits * (1 - (options.agilityAvoidDamage ?? 0));
+          hp += landed * Math.max(1, ((s.o.damage + 1) / 2) * (1 + (options.agilityDamageTaken ?? 0)));
+          rolls.push({ w: landed, min: 1, max: s.o.damage, factor: Math.max(0, 1 + (options.agilityDamageTaken ?? 0)) });
+        }
         reached *= s.pass;
         clean *= s.p;
         markShare += clean / n;
@@ -334,7 +342,9 @@ function cycle(gd, method, level, acc, options = {}) {
       // a random number of tries, so its slow end is about ln(10,000) times its average.
       const cleanMs = steps.reduce((t, s) => t + s.ms, 0);
       const slowMs = cleanMs + Math.log(1 / SLOW_CHANCE) * Math.max(0, time - cleanMs);
-      return { ms: time, slowMs, per: { obstacle: obstacles }, successChance: finish, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
+      // Hits per obstacle attempted, for whether auto-eat keeps you alive.
+      const hits = rolls.length && obstacles > 0 ? { per: obstacles, rolls: rolls.map((x) => ({ ...x, w: x.w / obstacles })) } : null;
+      return { ms: time, slowMs, per: { obstacle: obstacles }, successChance: finish, hits, note: [techniqueNote, known ? '' : 'assumes your techniques are high enough'].filter(Boolean).join(' · ') || undefined };
     }
     case 'ranching': {
       // Per animal per hour (ActiveRanchingAnimal): fed and kept safe, with no treats or pack bonus,
@@ -668,11 +678,18 @@ function baseRates(gd, method, level, options) {
   return {
     key: method.key,
     method,
+    // The method with the bonuses in it (loot and catch chances, stages): `method` goes back to the one
+    // you passed once computeRates is done with it.
+    adjusted: method,
     level: Math.max(level, method.level),
     msPerCycle: c.ms,
     // The longest it normally goes between XP gains (all but 1 time in 10,000), for the "No XP" warning.
     slowMsPerXp: c.passive ? null : c.slowMs ?? c.ms,
     cyclesPerHour: perHour,
+    // Finished actions an hour: a cook that isn't burnt, a pickpocket or heist with every stage stolen.
+    completionsPerHour: (c.completes ?? 1) * perHour,
+    // What can hurt you, per hour: { perHour (chances to be hit), rolls: [{ w, min, max, factor }] } (idleDanger).
+    hits: c.hits ? { perHour: c.hits.per * perHour, rolls: c.hits.rolls } : null,
     xpPerHour: acc.xp * perHour,
     outputs,
     inputs,

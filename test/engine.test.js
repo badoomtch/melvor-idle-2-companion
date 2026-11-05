@@ -9,7 +9,7 @@ import { conditionMet, masteryStatus } from '../engine/mastery.js';
 import { planAway } from '../engine/planner.js';
 import { expectedActions, ratesWithBonuses } from '../engine/shop.js';
 import { slayerCoinsPerKill, slayerOverview, slayerXpPerKill, taskLength } from '../engine/slayer.js';
-import { dropChance, enemyLoot, search, triesFor } from '../engine/lookup.js';
+import { dropChance, enemyLoot, itemDetails, methodChance, search, triesFor } from '../engine/lookup.js';
 import { computeRates, cookingSuccessChance, expectTable, miningExpectedHits, thievingSuccessChance } from '../engine/rates.js';
 import { defaultXpTable } from '../engine/xp.js';
 
@@ -384,6 +384,23 @@ test('search finds items and methods', () => {
   const results = search(gd, 'oak');
   assert.ok(results.some((r) => r.type === 'item' && r.name === 'Oak Log'));
   assert.ok(results.some((r) => r.type === 'method' && r.name === 'Oak Tree'));
+});
+
+test('item sources carry the base chance one action gives the item', () => {
+  const m = (key) => gd.methods.find((x) => x.name === key);
+  // The main product comes every action; bird nests roll on every woodcutting hit.
+  assert.deepEqual(methodChance(m('Normal Tree'), 'MelvorBase:NormalLog'), { chance: 1, per: 'log' });
+  assert.deepEqual(methodChance(m('Normal Tree'), 'MelvorBase:BirdNest'), { chance: 0.0025, per: 'hit' });
+  // Fishing: the catch chance times the fish's share of the table.
+  close(methodChance(m('Shallow Pools'), 'MelvorBase:RawShrimp').chance, 0.8);
+  // Thieving: the loot table's chance times the item's weight share, per attempt.
+  const t = methodChance(m('Citizen'), 'MelvorBase:Bread');
+  assert.equal(t.per, 'attempt');
+  close(t.chance, 0.15 * 0.3);
+  assert.equal(methodChance(m('Normal Tree'), 'MelvorBase:Bread'), null);
+  // Every method source in the index has its chance.
+  const bread = itemDetails(gd, 'MelvorBase:Bread').sources.filter((s) => s.type === 'method');
+  assert.ok(bread.length && bread.every((s) => s.chance > 0 && s.chance <= 1 && s.per));
 });
 
 test('no demo-locked content leaks into the companion data', () => {

@@ -52,7 +52,7 @@ export function gearUpgrades(gd, { rec, owned, levels, bank = {}, food = null, s
   const rows = [];
   for (const [id, item] of Object.entries(gd.items)) {
     const eq = item.equip;
-    if (!eq || (owned.get(id) ?? 0) > 0) continue;
+    if (!eq || (owned.get(id) ?? 0) > 0 || gd.demoLocked('items', id)) continue;
     if (eq.type === 'Weapon' && !weaponStyles(gd, id).includes(style)) continue;
     // Too far off to be worth listing.
     const wear = missingLevels(gd, eq.requires, levels);

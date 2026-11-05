@@ -7,6 +7,13 @@ export const GP = 'GoldPieces';
 const humanize = (s) => String(s ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim();
 const localId = (id) => String(id ?? '').split(':').pop();
 
+// Whether to recommend only what the demo has, for the setting ('auto', 'on' or 'off') and a save:
+// 'auto' follows the save (its header says whether it's from the demo).
+export const demoOnlyFor = (setting, save) => (setting === 'on' ? true : setting === 'off' ? false : save?.header?.isDemo === true);
+
+// The requirement something out of the demo gets (the same one the data builder gives demo-locked content).
+export const DEMO_LOCK = Object.freeze({ type: 'locked', label: 'Not available in the demo' });
+
 export function createGameData(raw) {
   const mechanics = raw.meta.mechanics;
   const xp = createXpTable(mechanics.xpTable);
@@ -59,6 +66,17 @@ export function createGameData(raw) {
 
     levelOf: (levels, skill) => Math.max(1, Math.floor(levels?.[skill] ?? 1)),
 
+    // What the Steam demo doesn't have (data/demo-availability.json, see tools/build-demo-list.js):
+    // { skills, methods, enemies, areas, dungeons, shop, mill, items } as Sets. With `demoOnly` on, all of
+    // it counts as locked, so nothing outside the demo is recommended. The UI and server set both.
+    demo: null,
+    demoOnly: false,
+    setDemoList(list) {
+      gd.demo = list?.locked ? { ...Object.fromEntries(Object.entries(list.locked).map(([k, ids]) => [k, new Set(ids)])), source: list.source ?? null } : null;
+    },
+    // Whether something is out of the demo and the demo-only setting is on.
+    demoLocked: (kind, id) => !!(gd.demoOnly && gd.demo?.[kind]?.has(id)),
+
     // What the loaded save shows the player has: { toolbelts: { skill: [{ item, qty }] }, owned: { item: qty } }.
     // The UI sets this; without it, tool requirements can't be confirmed.
     player: null,
@@ -72,6 +90,7 @@ export function createGameData(raw) {
       const missing = [];
       const unknown = [];
       const equip = [];
+      if (method.key && gd.demoLocked('methods', method.key)) missing.push(DEMO_LOCK);
       if (gd.levelOf(levels, method.skill) < method.level) missing.push({ type: 'level', skill: method.skill, level: method.level });
       for (const r of method.requires ?? []) {
         if (r.type === 'level') {
@@ -315,7 +334,7 @@ export function playerState(save, gd = null) {
 export function purchaseStatus(gd, p, levels, purchased = {}) {
   const soldOut = p.buyLimit > 0 && (purchased[p.id] ?? 0) >= p.buyLimit;
   const req = gd.checkRequirements({ skill: null, level: 0, requires: p.requires.filter((r) => r.type !== 'purchase') }, levels);
-  const missing = [...req.missing, ...p.requires.filter((r) => r.type === 'purchase' && !(purchased[r.id] > 0))];
+  const missing = [...(gd.demoLocked('shop', p.id) ? [DEMO_LOCK] : []), ...req.missing, ...p.requires.filter((r) => r.type === 'purchase' && !(purchased[r.id] > 0))];
   return { ok: !soldOut && !missing.length && !req.unknown.length, soldOut, missing, unknown: req.unknown };
 }
 

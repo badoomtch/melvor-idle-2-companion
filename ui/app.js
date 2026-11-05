@@ -1,6 +1,6 @@
 // Companion UI controller: loads data and saves, keeps state, routes, and re-renders on change.
 import { currentActivity } from '/engine/advisor.js';
-import { createGameData, playerBonuses, playerCombatMods, playerState } from '/engine/gamedata.js';
+import { createGameData, demoOnlyFor, playerBonuses, playerCombatMods, playerState } from '/engine/gamedata.js';
 import { playtestReport } from '/engine/playtest-report.js';
 import { stuckFor, stuckText } from '/engine/stuck.js';
 import { activityKey, currentSupplies } from '/engine/supplies.js';
@@ -48,6 +48,8 @@ const state = {
   notify: store.get('notify', false),
   alerts: { runningOut: true, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, minutes: 15, ...store.get('alerts', {}) },
   useBonuses: store.get('useBonuses', true),
+  // Recommend only what the Steam demo has: 'auto' (when the save is from the demo), 'on' or 'off'.
+  demoOnly: store.get('demoOnly', 'auto'),
   // The plan on What next: the companion keeps it and moves it on with each autosave (server/route-watcher.js).
   plan: null,
   serverAlerts: null,
@@ -113,6 +115,7 @@ async function syncServerAlerts(enabled = state.serverAlerts?.enabled) {
       rareFinds: state.alerts.rareFinds !== false,
       minutes: state.alerts.minutes,
       useBonuses: state.useBonuses,
+      demoOnly: state.demoOnly,
       checkUpdates: state.serverAlerts.checkUpdates !== false,
       goals: state.goals.map(({ skill, target }) => ({ skill, target })),
     });
@@ -268,6 +271,7 @@ function syncPlayer() {
   const counted = save && state.useBonuses;
   gd.playerBonuses = counted ? playerBonuses(gd, save) : null;
   gd.playerCombatMods = counted ? playerCombatMods(gd, save) : null;
+  gd.demoOnly = demoOnlyFor(state.demoOnly, state.save);
 }
 
 function viewContext() {
@@ -609,6 +613,11 @@ const ACTIONS = {
     store.set('useBonuses', state.useBonuses);
     syncServerAlerts();
   },
+  demoOnly(el) {
+    state.demoOnly = el.dataset.value;
+    store.set('demoOnly', state.demoOnly);
+    syncServerAlerts();
+  },
   alertToggle(el) {
     state.alerts = { ...state.alerts, [el.dataset.key]: !state.alerts[el.dataset.key] };
     store.set('alerts', state.alerts);
@@ -925,6 +934,12 @@ async function init() {
     return;
   }
   await loadIcons();
+  // What the Steam demo doesn't have, for the demo-only setting (optional).
+  try {
+    gd.setDemoList(await fetchJson('/data/demo-availability.json'));
+  } catch {
+    // no demo list: everything counts as available
+  }
   gd.preferredFood = state.food && gd.items[state.food] ? state.food : null;
   state.ui.calc.skill = gd.trainableSkills[0];
   state.ui.goalSkill = gd.skills.find((s) => gd.methodsBySkill[s.id])?.id ?? gd.skills[0].id;

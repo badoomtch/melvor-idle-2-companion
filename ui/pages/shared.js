@@ -37,10 +37,10 @@ export function memo(name, key, compute) {
   memoCache.set(name, { key, value });
   return value;
 }
-// A key that changes with every new autosave (or any change to levels and bonuses).
-export const saveKey = (ctx) => `${ctx.save?.id ?? 'manual'}|${ctx.save?.header.timestamp ?? 0}|${ctx.state.useBonuses}|${ctx.state.levelSource}|${Object.values(ctx.levels).join(',')}`;
-// A key that changes when your levels, bonuses or (optionally) bank change.
-export const levelsKey = (ctx, withBank = false) => `${ctx.save?.id ?? 'manual'}|${ctx.state.useBonuses}|${Object.values(ctx.levels).join(',')}${withBank ? `|${Object.keys(ctx.stock ?? {}).length}` : ''}`;
+// A key that changes with every new autosave (or any change to levels, bonuses and demo-only).
+export const saveKey = (ctx) => `${ctx.save?.id ?? 'manual'}|${ctx.save?.header.timestamp ?? 0}|${ctx.state.useBonuses}|${ctx.gd.demoOnly}|${ctx.state.levelSource}|${Object.values(ctx.levels).join(',')}`;
+// A key that changes when your levels, bonuses, demo-only or (optionally) bank change.
+export const levelsKey = (ctx, withBank = false) => `${ctx.save?.id ?? 'manual'}|${ctx.state.useBonuses}|${ctx.gd.demoOnly}|${Object.values(ctx.levels).join(',')}${withBank ? `|${Object.keys(ctx.stock ?? {}).length}` : ''}`;
 
 // How a skilling bonus reads: "+10% XP", "+1 extra items per craft (Arrows)".
 const STAT_LABELS = {

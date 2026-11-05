@@ -2372,7 +2372,8 @@ export function optimiseGear(gd, { style, owned, levels, bank, enemy, area = nul
 export function fightableEnemies(gd, levels) {
   const out = [];
   for (const enemy of gd.enemies) {
-    const options = enemy.areas.map((id) => gd.areaById.get(id)).filter((a) => a && a.kind === 'area' && !/Quest/i.test(a.category ?? ''));
+    if (gd.demoLocked('enemies', enemy.id)) continue;
+    const options = enemy.areas.map((id) => gd.areaById.get(id)).filter((a) => a && a.kind === 'area' && !/Quest/i.test(a.category ?? '') && !gd.demoLocked('areas', a.id));
     let best = null;
     for (const area of options) {
       const req = gd.checkRequirements({ skill: null, level: 0, requires: area.requires }, levels);

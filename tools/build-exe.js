@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
 // What the companion needs at run time; the game data source, tests and tools stay out.
-const INCLUDE = ['package.json', 'server', 'engine', 'ui', 'data/companion-data.json', 'data/icons.json'];
+const INCLUDE = ['package.json', 'server', 'engine', 'ui', 'data/companion-data.json', 'data/demo-availability.json', 'data/icons.json'];
 
 function walk(path) {
   const full = join(ROOT, path);

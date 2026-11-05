@@ -63,7 +63,7 @@ const TRAIN_SKILLS = ['Attack', 'Strength', 'Defence', 'Hitpoints', 'Ranged', 'M
 // Recommendations take tens of milliseconds; keep the last few so typing elsewhere stays instant.
 const combatCache = new Map();
 function cachedRecommendation(ctx, key, compute) {
-  const full = `${ctx.save?.header.timestamp}|${ctx.state.levelSource}|${key}`;
+  const full = `${ctx.save?.header.timestamp}|${ctx.state.levelSource}|${ctx.gd.demoOnly}|${key}`;
   if (!combatCache.has(full)) {
     combatCache.set(full, compute());
     while (combatCache.size > 8) combatCache.delete(combatCache.keys().next().value);
@@ -227,7 +227,7 @@ function dungeonsCard(ctx, rec, { style, skill, food }) {
     gd.combat.dungeons
       .map((d) => {
         const req = gd.checkRequirements({ skill: null, level: 0, requires: d.requires }, ctx.levels);
-        if (!req.ok) return null;
+        if (!req.ok || gd.demoLocked('dungeons', d.id)) return null;
         const run = dungeonRun(gd, d, { gear: g.gear, stance: g.stance, spell: g.spell, levels: ctx.levels, food });
         return run && { dungeon: d, run };
       })

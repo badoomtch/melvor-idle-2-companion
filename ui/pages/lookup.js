@@ -40,13 +40,21 @@ function itemPage(ctx, id) {
   const d = itemDetails(gd, id);
   if (!d.info) return card('Not found', '<p class="muted">That item isn\'t in the companion data (it may not be in the demo).</p>');
   const needs = (list) => (list.length ? ` · needs ${requirementText(ctx, list)}` : '');
+  // With demo only on, sources the demo doesn't have go last, marked.
+  const outOfDemo = (s) =>
+    s.type === 'method' ? gd.demoLocked('methods', s.method.key)
+      : s.type === 'enemy' ? gd.demoLocked('enemies', s.enemy.id)
+        : s.type === 'shop' ? gd.demoLocked('shop', s.purchase.id)
+          : s.type === 'mill' ? gd.demoLocked('mill', s.recipe.id)
+            : gd.demoLocked('items', id);
+  const notInDemo = (s) => (outOfDemo(s) ? ' <span class="pill">Not in demo</span>' : '');
   // Likeliest source first (a stable sort, so ties keep the game data's order).
-  const sources = [...d.sources].sort((a, b) => sourceChance(b) - sourceChance(a)).map((s) => {
-    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}${s.chance != null ? ` · ${chanceText(s.chance, s.per)}` : ''}</span></li>`;
-    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${chanceText(s.chance, 'kill')}</span></li>`;
-    if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span></li>`;
-    if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span></li>`;
-    return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span></li>`;
+  const sources = [...d.sources].sort((a, b) => outOfDemo(a) - outOfDemo(b) || sourceChance(b) - sourceChance(a)).map((s) => {
+    if (s.type === 'method') return `<li>${methodLink(s.method)} <span class="muted small">${esc(skillName(ctx, s.method.skill))} ${s.method.level}${s.chance != null ? ` · ${chanceText(s.chance, s.per)}` : ''}</span>${notInDemo(s)}</li>`;
+    if (s.type === 'enemy') return `<li><a class="with-icon" href="#/lookup/enemy/${enc(s.enemy.id)}">${iconImg(s.enemy.icon, 'icon sm')}${esc(s.enemy.name)}</a> <span class="muted small">${chanceText(s.chance, 'kill')}</span>${notInDemo(s)}</li>`;
+    if (s.type === 'upgrade') return `<li>Upgrade from ${upgradeFrom(ctx, s.upgrade)} <span class="muted small">In the bank${s.upgrade.qty > 1 ? ` · makes ${exact(s.upgrade.qty)}` : ''}${needs(s.upgrade.requires)}</span>${notInDemo(s)}</li>`;
+    if (s.type === 'mill') return `<li>${esc(gd.raw.grainMill.name)}: ${esc(s.recipe.name)} <span class="muted small">${millBatch(ctx, s.recipe)}${needs(s.recipe.requires)}</span>${notInDemo(s)}</li>`;
+    return `<li><a href="#/lookup/shop/${enc(s.purchase.id)}">${esc(s.purchase.name)}</a> <span class="muted small">Shop</span>${notInDemo(s)}</li>`;
   });
   const uses = d.uses.map((u) => {
     if (u.type === 'method') return `<li>${methodLink(u.method)} <span class="muted small">${esc(skillName(ctx, u.method.skill))} ${u.method.level} · uses ${u.qty}</span></li>`;

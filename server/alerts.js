@@ -8,18 +8,19 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { farmingPlots } from '../engine/farming-plots.js';
-import { playerBonuses, playerState } from '../engine/gamedata.js';
+import { demoOnlyFor, playerBonuses, playerState } from '../engine/gamedata.js';
 import { ranchModel } from '../engine/ranch.js';
 import { rareOdds } from '../engine/rare-items.js';
 import { stuckFor, stuckText } from '../engine/stuck.js';
 import { activityKey, currentSupplies } from '../engine/supplies.js';
 
-export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, useBonuses: true, checkUpdates: true, goals: [] };
+export const DEFAULT_ALERT_SETTINGS = { enabled: false, levelUps: true, runningOut: true, minutes: 15, stopped: true, planSteps: true, harvests: true, ranch: true, rareFinds: true, useBonuses: true, demoOnly: 'auto', checkUpdates: true, goals: [] };
 
 // Only the known fields, with sane types, so a bad request can't store junk.
 export function cleanSettings(input = {}) {
   const s = { ...DEFAULT_ALERT_SETTINGS };
   for (const key of ['enabled', 'levelUps', 'runningOut', 'stopped', 'planSteps', 'harvests', 'ranch', 'rareFinds', 'useBonuses', 'checkUpdates']) if (typeof input[key] === 'boolean') s[key] = input[key];
+  if (['auto', 'on', 'off'].includes(input.demoOnly)) s.demoOnly = input.demoOnly;
   if (Number.isFinite(input.minutes)) s.minutes = Math.min(Math.max(Math.round(input.minutes), 1), 600);
   if (Array.isArray(input.goals)) {
     s.goals = input.goals
@@ -138,6 +139,7 @@ export function createAlertWatcher({ gd, dir, notify, now = () => Date.now() }) 
     if (settings.runningOut || settings.stopped) {
       gd.player = playerState(save, gd);
       gd.playerBonuses = settings.useBonuses ? playerBonuses(gd, save) : null;
+      gd.demoOnly = demoOnlyFor(settings.demoOnly, save);
     }
     if (settings.runningOut) {
       for (const s of currentSupplies(gd, save, levels, gd.player.owned)) {

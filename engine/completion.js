@@ -1,6 +1,6 @@
 // Completion log progress and the quickest way to fill each gap. Isomorphic.
 import { obtain, producerIndex } from './advisor.js';
-import { purchaseStatus } from './gamedata.js';
+import { DEMO_LOCK, purchaseStatus } from './gamedata.js';
 import { millRecipeRates } from './grain-mill.js';
 import { upgradeNeeds } from './item-upgrades.js';
 import { itemDetails, triesFor } from './lookup.js';
@@ -68,7 +68,7 @@ export function quickestSource(gd, itemId, { levels, bestFights = null, wallet =
       // One Grain Mill batch, after gathering its crops. The mill itself and the recipe's hopper are
       // shop purchases, so they're in the recipe's requirements.
       const r = source.recipe;
-      const req = gd.checkRequirements({ skill: null, level: 0, requires: [...(gd.raw.grainMill.requires ?? []), ...r.requires] }, levels);
+      const req = gd.checkRequirements({ skill: null, level: 0, requires: [...(gd.demoLocked('mill', r.id) ? [DEMO_LOCK] : []), ...(gd.raw.grainMill.requires ?? []), ...r.requires] }, levels);
       if (!usable(req)) {
         blockers.push({ type: 'mill', recipe: r, missing: req.missing });
         continue;

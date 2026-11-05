@@ -1,7 +1,7 @@
-// Settings: levels source, bonuses, appearance, alerts and notifications.
+// Settings: levels source, bonuses, demo only, appearance, alerts and notifications.
 import { playerBonuses, playerCombatMods } from '/engine/gamedata.js';
 import { MODELLED_BONUS_STATS } from '/engine/rates.js';
-import { ago, badge, esc } from '/ui/format.js';
+import { ago, badge, esc, exact } from '/ui/format.js';
 import { bonusText, card, pageHead, skillName } from './shared.js';
 import { THEMES } from './topbar.js';
 
@@ -29,6 +29,24 @@ function bonusesCard(ctx) {
     ${rows.length ? `<ul class="list-plain">${rows.join('')}</ul>` : '<p class="muted small">None found yet.</p>'}`);
 }
 
+// ---------- Demo ----------
+
+// Recommend only what the Steam demo has: automatic (from the save), on or off.
+function demoCard(ctx) {
+  const { gd, state } = ctx;
+  if (!gd.demo) return '';
+  const fromSave = ctx.save?.header?.isDemo;
+  const option = (value, label) => `<button data-action="demoOnly" data-value="${value}" aria-pressed="${state.demoOnly === value}">${label}</button>`;
+  const auto = ctx.save ? `your save is ${fromSave ? '' : 'not '}from the demo, so it's ${fromSave ? 'on' : 'off'}` : 'no save loaded, so it\'s off';
+  const skills = [...gd.demo.skills].map((id) => esc(gd.skillName(id))).join(', ');
+  const share = (kind, all) => `${exact(all.length - gd.demo[kind].size)} of ${exact(all.length)}`;
+  return card('Demo', `<div class="segmented" role="group" aria-label="Only what the demo has" style="margin-bottom:12px">
+      ${option('auto', 'Automatic')}${option('on', 'Demo only')}${option('off', 'Everything')}
+    </div>
+    <p class="small muted">With demo only on, training methods, enemies, areas, dungeons, shop purchases and gear the Steam demo doesn't have are never recommended, and show as "Not in demo". Automatic: ${auto}.</p>
+    <p class="small muted">The demo has ${share('methods', gd.methods)} training methods, ${share('enemies', gd.enemies)} enemies and ${share('items', Object.keys(gd.items))} items${skills ? `; ${skills} aren't in it at all` : ''}. From the demo's own data (version ${esc(gd.demo.source?.gameVersion ?? '?')}), via <a href="https://github.com/knsk45/melvor-idle-2-tools" target="_blank" rel="noopener">melvor-idle-2-tools</a>.</p>`);
+}
+
 // ---------- Settings ----------
 
 export function settings(ctx) {
@@ -47,6 +65,7 @@ export function settings(ctx) {
         : `<p class="small muted">Levels, XP and your bank are read from your save automatically. Switch to "Enter by hand" to plan without a save, or to try "what if" levels.</p>`}`)}
     ${card('Appearance', `<div class="theme-grid">${THEMES.map((t) => `<button class="theme-option" data-action="theme" data-value="${t.id}" aria-pressed="${state.theme === t.id}"><span class="swatches">${t.swatch.map((c) => `<span style="background:${c}"></span>`).join('')}</span><span>${esc(t.name)}</span></button>`).join('')}</div>`)}
     ${bonusesCard(ctx)}
+    ${demoCard(ctx)}
     ${card('Alerts', `<p class="small muted">Pop-ups (and desktop notifications, if they're on) while the game runs.</p>
       <label class="inline-check"><input type="checkbox" data-action="alertToggle" data-key="runningOut"${state.alerts.runningOut ? ' checked' : ''}> Warn when supplies will run out within <input id="alert-minutes" type="number" min="1" max="600" value="${state.alerts.minutes}" data-bind="alerts.minutes" style="width:5em"> minutes</label>
       <label class="inline-check" style="margin-top:8px"><input type="checkbox" data-action="alertToggle" data-key="stopped"${state.alerts.stopped ? ' checked' : ''}> Warn when nothing is training, progress stalls, or the game stops saving</label>

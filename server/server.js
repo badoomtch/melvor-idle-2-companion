@@ -55,6 +55,19 @@ if (!existsSync(DATA_FILE)) {
 }
 
 const data = JSON.parse(readFileSync(DATA_FILE, 'utf8'));
+// What the Steam demo doesn't have, for the demo-only setting (tools/build-demo-list.js). Optional.
+const DEMO_FILE = join(ROOT, 'data', 'demo-availability.json');
+let demoList = null;
+try {
+  if (existsSync(DEMO_FILE)) demoList = JSON.parse(readFileSync(DEMO_FILE, 'utf8'));
+} catch (e) {
+  console.error(`Could not read ${DEMO_FILE}: ${e.message}`);
+}
+function gameData() {
+  const gd = createGameData(data);
+  gd.setDemoList(demoList);
+  return gd;
+}
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const appVersion = pkg.version;
 // Changes whenever the page's files or the game data change: an open page compares it after a
@@ -80,18 +93,18 @@ let saveDirs = resolveSaveDirs(args.saves);
 const historyStore = createHistoryStore(HISTORY_DIR);
 const observations = createObservationStore(HISTORY_DIR);
 // Rare items found between autosaves, kept whether or not alerts are on.
-const finds = createFindLog({ gd: createGameData(data), dir: HISTORY_DIR });
+const finds = createFindLog({ gd: gameData(), dir: HISTORY_DIR });
 const notify = createNotifier();
-const alerts = createAlertWatcher({ gd: createGameData(data), dir: HISTORY_DIR, notify });
+const alerts = createAlertWatcher({ gd: gameData(), dir: HISTORY_DIR, notify });
 // Plans use your own speed from what each action has really given you.
-const routes = createRouteWatcher({ gd: createGameData(data), dir: HISTORY_DIR, notify, settings: () => alerts.settings, actions: (id) => observations.peek(id) });
+const routes = createRouteWatcher({ gd: gameData(), dir: HISTORY_DIR, notify, settings: () => alerts.settings, actions: (id) => observations.peek(id) });
 // Whether GitHub has a newer release (package.json's repository, or MELVOR_COMPANION_REPO for a fork),
 // unless it's turned off in Settings.
 const updates = createUpdateCheck({ repo: process.env.MELVOR_COMPANION_REPO || repoFrom(pkg), current: appVersion, enabled: () => alerts.settings.checkUpdates !== false });
 
 // What the companion predicted for the action a save shows, with that save's levels and bonuses, so a
 // measurement is compared with the estimate of its own time, not one made after later upgrades.
-const estimateGd = createGameData(data);
+const estimateGd = gameData();
 function predicted(parsed) {
   if (!parsed?.skills) return null;
   try {

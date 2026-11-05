@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { speedFactors } from '../engine/accuracy.js';
 import { bankCapacity, bankRoom } from '../engine/bank-space.js';
 import { currentActivity } from '../engine/advisor.js';
-import { playerBonuses, playerState } from '../engine/gamedata.js';
+import { demoOnlyFor, playerBonuses, playerState } from '../engine/gamedata.js';
 import { extraGoals } from '../engine/route-goals.js';
 import { describeStep, lockRoute, routeProgress } from '../engine/route-progress.js';
 import { planRoute } from '../engine/route.js';
@@ -40,6 +40,7 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
   function inputs(save) {
     gd.player = playerState(save, gd);
     gd.playerBonuses = settings().useBonuses === false ? null : playerBonuses(gd, save);
+    gd.demoOnly = demoOnlyFor(settings().demoOnly, save);
     const levels = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.level]));
     const xp = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.xp]));
     return { levels, xp, bank: gd.player.owned, mastery: save.mastery ?? null, current: currentActivity(gd, save.header, levels)?.method?.key ?? null,

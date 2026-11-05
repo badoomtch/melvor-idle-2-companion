@@ -28,7 +28,7 @@ server/   local web server, save finder, save reader, alerts, update check (Node
 ui/       the web page (plain HTML, CSS and JS; works offline)
 tools/    game-data extractor, data builder, icon extractor, exe builder, demo save writer
 test/     node:test suites
-data/     the companion's game data (built from the game, see below)
+data/     the companion's game data (built from the game, see below) and the demo list
 docs/     this file and the README screenshots
 ```
 
@@ -47,7 +47,13 @@ docs/     this file and the README screenshots
 3. See what moved: `npm run compare -- <old companion-data.json>` writes `reports/build-diff.md`.
 4. Refresh the icons: `node tools/extract-icons.js [path/to/Melvor2.exe]`.
 5. A few values live in the game's code rather than its data (level cap, thieving stun, XP table constants, offline cap, success constants, enemy spawn time). They're in `MECHANICS` at the top of `tools/build-data.js`, each with the code it comes from. Re-check them against the new build.
-6. Save format: `server/save-reader.js` documents the layout it reads. If the game raises the save version, read a copy of a new save. It should give no warnings, every region should be read to the end, each skill's level should match its XP, and every bank item should be known. Only then raise `SaveVersion.LatestVerified`. Until then, players see a note that numbers may be off.
+6. Refresh the demo list (what the Steam demo doesn't have, for the **Demo only** setting). It comes from [knsk45/melvor-idle-2-tools](https://github.com/knsk45/melvor-idle-2-tools) (MIT), which reads the demo's own data package and keeps each definition's `DemoLocked` condition:
+   ```
+   git clone --depth 1 https://github.com/knsk45/melvor-idle-2-tools ../melvor-idle-2-tools
+   node tools/build-demo-list.js ../melvor-idle-2-tools
+   ```
+   It writes `data/demo-availability.json`: ids from `data/companion-data.json` that are locked in the demo or missing from it. Re-run it after every `build-data` and every new demo, and check that its summary names the demo version you expect. Without the file, the setting is hidden and everything counts as available.
+7. Save format: `server/save-reader.js` documents the layout it reads. If the game raises the save version, read a copy of a new save. It should give no warnings, every region should be read to the end, each skill's level should match its XP, and every bank item should be known. Only then raise `SaveVersion.LatestVerified`. Until then, players see a note that numbers may be off.
 
 ## Making a release
 

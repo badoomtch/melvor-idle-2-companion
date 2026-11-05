@@ -2,6 +2,7 @@
 // Isomorphic. In the game (ItemUpgradingComponent) an upgrade takes its costs, items and currency, and
 // gives `qty` of the upgraded item at once; its button stays locked until its requirements are met.
 import { obtain } from './advisor.js';
+import { DEMO_LOCK } from './gamedata.js';
 
 /**
  * What `times` upgrades need with what you have.
@@ -13,7 +14,9 @@ import { obtain } from './advisor.js';
  *   makes], hours: time to gather (the upgrade itself is instant), ready: you can upgrade right now }
  */
 export function upgradeNeeds(gd, upgrade, { levels, stock = null, wallet = null, index = null, times = 1 } = {}) {
-  const req = gd.checkRequirements({ skill: null, level: 0, requires: upgrade.requires }, levels);
+  // An upgrade into something the demo doesn't have is locked there.
+  const requires = gd.demoLocked('items', upgrade.item) ? [DEMO_LOCK, ...upgrade.requires] : upgrade.requires;
+  const req = gd.checkRequirements({ skill: null, level: 0, requires }, levels);
   const currency = upgrade.costs.currencies.map((c) => {
     const need = c.qty * times;
     const have = wallet ? (wallet[c.currency] ?? 0) : need;

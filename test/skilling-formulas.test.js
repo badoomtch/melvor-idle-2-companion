@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { createGameData } from '../engine/gamedata.js';
-import { computeRates, miningExpectedHits, woodcuttingHits } from '../engine/rates.js';
+import { computeRates, huntingTodo, miningExpectedHits, woodcuttingHits } from '../engine/rates.js';
 
 const gd = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
 const method = (key) => gd.methodByKey.get(key);
@@ -164,6 +164,37 @@ test('hunting: the preferred bait speeds trapping while you have some, and trapl
   assert.ok(trapless.successChance > plain.successChance, 'trapless adds its success bonus');
   assert.ok(!trapless.inputs.some((i) => i.item === snare), 'and uses no snares');
   assert.ok(!run({}, { Hunting: 10, Strength: 1 }).note.includes('trapless'), 'only once its levels are met');
+});
+
+test('hunting: says what to tick in the game, from what the save shows is set for that animal', () => {
+  const butterfly = method('Hunting/GreenButterfly');
+  const chicken = method('Hunting/WildChicken');
+  const kit = butterfly.traps[0].item;
+  const snare = chicken.traps[0].item;
+  // Green Butterfly without a trap needs Hunting 30 and two Agility techniques at level 10.
+  const todo = (m, owned, animals, techniques = { Climbing: 15, Evading: 19 }) => {
+    gd.player = { owned, levels: { Hunting: 34, Strength: 50 }, techniques, huntingAnimals: animals };
+    try {
+      return { todo: huntingTodo(gd, m), note: computeRates(gd, m, 34).note };
+    } finally {
+      gd.player = null;
+    }
+  };
+  // No kit: trapless, and the game needs it ticked.
+  assert.deepEqual(todo(butterfly, {}, { GreenButterfly: { trap: kit, useBait: false, trapless: false } }).todo, [{ kind: 'trapless' }]);
+  assert.deepEqual(todo(butterfly, {}, { GreenButterfly: { trap: kit, useBait: false, trapless: true } }).todo, []);
+  // One technique at 10 isn't enough: then it needs a kit, which you don't have.
+  const short = todo(butterfly, {}, null, { Climbing: 15, Evading: 9 });
+  assert.ok(!short.note.includes('trapless'));
+  assert.deepEqual(short.todo, []);
+  // Ticked in the game: trapless even with kits in the bank, as the game does.
+  assert.ok(todo(butterfly, { [kit]: 5 }, { GreenButterfly: { trap: kit, useBait: false, trapless: true } }).note.includes('trapless'));
+  // Bait only counts with "Use Bait?" ticked; a trap has to be selected, and one you have.
+  const bait = chicken.bait.item;
+  assert.deepEqual(todo(chicken, { [snare]: 10, [bait]: 10 }, { WildChicken: { trap: null, useBait: false, trapless: false } }).todo, [{ kind: 'bait', item: bait }, { kind: 'trap', item: snare }]);
+  assert.deepEqual(todo(chicken, { [snare]: 10 }, { WildChicken: { trap: snare, useBait: false, trapless: false } }).todo, []);
+  // No save settings: all of it.
+  assert.deepEqual(todo(butterfly, {}, null).todo, [{ kind: 'trapless' }]);
 });
 
 test('hunting: surveys can turn up one find per catch, and an undiscovered animal takes longer', () => {

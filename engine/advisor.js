@@ -241,12 +241,15 @@ function pickMethod(gd, skill, levels, level, xp, until, stock, index, prev, pre
     const chains = materials.reduce((n, m) => n + (m.short > 0 ? 1 + m.needs.length : 0), 0);
     consider({ rates, ...full, gather, total: full.hours + gather, cost: full.hours + gather + (switchIn + chains) * SWITCH_HOURS, materials });
     if (!chains) continue;
-    // Just as far as the bank lasts, then something else (one more switch).
-    const cap = Math.min(...rates.inputs.map((i) => ((stock.get(i.item) ?? 0) >= minEach(method, i.item) ? Math.floor((stock.get(i.item) ?? 0) / (i.perHour / rates.cyclesPerHour) + 1e-9) : 0)));
+    // Just as far as the bank lasts, then something else (one more switch). `limitedBy` is the material
+    // that runs out first: the run can end part-way through a level.
+    const fits = rates.inputs.map((i) => ({ item: i.item, n: (stock.get(i.item) ?? 0) >= minEach(method, i.item) ? Math.floor((stock.get(i.item) ?? 0) / (i.perHour / rates.cyclesPerHour) + 1e-9) : 0 }));
+    const cap = Math.min(...fits.map((f) => f.n));
     if (cap < 1) continue;
     const part = runFor(gd, method, level, xp, until, cap);
     const fromBank = rates.inputs.map((i) => obtain(index, stock, i.item, Math.min(stock.get(i.item) ?? 0, part.need.get(i.item) ?? 0)));
-    consider({ rates, ...part, gather: 0, total: part.hours, cost: part.hours + (switchIn + 1) * SWITCH_HOURS, materials: fromBank, partial: true });
+    const limitedBy = part.actions >= cap ? fits.find((f) => f.n === cap).item : null;
+    consider({ rates, ...part, gather: 0, total: part.hours, cost: part.hours + (switchIn + 1) * SWITCH_HOURS, materials: fromBank, partial: true, limitedBy });
   }
   return best;
 }
@@ -329,6 +332,8 @@ export function planTraining(gd, skill, levels, xpNow, targetLevel, { bank = nul
     xp += pick.xp;
     level = Math.min(target, gd.xp.levelForXp(xp, gd.levelCap));
     step.toLevel = level;
+    // How the step ends: at a level, or where a material in the bank runs out (the last pick says).
+    step.limitedBy = pick.limitedBy ?? null;
     step.hours += pick.hours;
     step.actions += pick.actions;
     step.xp += pick.xp;

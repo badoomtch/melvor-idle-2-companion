@@ -36,6 +36,7 @@ export function lockRoute(route, { madeAt = Date.now(), speed = null } = {}) {
         xpAfter: st.xpAfter,
         xpGain: st.xpGain,
         toLevel: st.toLevel ?? null,
+        limitedBy: st.limitedBy ?? null,
         lasts: Number.isFinite(st.lasts) ? st.lasts : null,
         levelUps: st.levelUps ?? [],
         task: st.task ?? null,
@@ -239,11 +240,20 @@ function topUp(gd, index, stock, item, qty, forStep) {
 export const STEP_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', firemaking: 'Burn', artisan: 'Make', thieving: 'Steal from', agility: 'Do', astrology: 'Study', hunting: 'Hunt', farming: 'Grow', ranching: 'Raise' };
 export const GATHER_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', artisan: 'Make', hunting: 'Hunt', farming: 'Grow' };
 
+// Where a training step stops. Most get you to a level ("until Runecrafting 45"); one the plan cut short
+// where a material in your bank runs out, then moves on to something else, gains no level, so it says
+// what it's for and what runs out. `item` and `skill` render the names (plain text, or a link and escaped
+// HTML). Old plans didn't keep the material: they say it's as far as your materials go.
+export function trainEnd(gd, st, { item = (id) => gd.itemName(id), skill = gd.skillName(st.method.skill) } = {}) {
+  if (st.levelUps?.length || st.toLevel == null) return `until ${skill} ${st.toLevel}`;
+  return `for ${skill} XP, ${st.limitedBy ? `until you run out of ${item(st.limitedBy)}` : 'as far as your materials go'}`;
+}
+
 // A step in plain words, with what's still to do when `left` says so: for notifications and titles.
 export function describeStep(gd, st, { left = true } = {}) {
   const todo = left && !st.done && st.left ? st.left : null;
   const n = (x) => Math.ceil(x).toLocaleString('en-US');
   if (st.kind === 'task') return `${st.task.label}${todo?.progress != null ? ` (${n(todo.progress)}/${n(st.task.of)})` : ''}`;
-  if (st.kind === 'train') return `${STEP_VERBS[st.method.kind] ?? 'Do'} ${st.method.name} × ${n(todo ? todo.actions : st.actions)} until ${gd.skillName(st.method.skill)} ${st.toLevel}`;
+  if (st.kind === 'train') return `${STEP_VERBS[st.method.kind] ?? 'Do'} ${st.method.name} × ${n(todo ? todo.actions : st.actions)} ${trainEnd(gd, st)}`;
   return `${GATHER_VERBS[st.method.kind] ?? 'Get'} ${n(todo?.qty ?? st.qty)} ${gd.itemName(st.item)}`;
 }

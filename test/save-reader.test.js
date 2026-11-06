@@ -269,6 +269,29 @@ test('reads each Hunting animal journal level', () => {
   assert.deepEqual(save.warnings, []);
 });
 
+test('reads each Hunting animal\'s trap, "Use Bait?" and "Enable Trapless Hunting"', () => {
+  // ActiveHuntingAnimal.WriteTo: tracks, step, steps, [trap], species set, [species], state, use bait,
+  // survey fails, bait used, trap misses, trapless.
+  const hunt = ({ trap = null, useBait = false, trapless = false }) => (c) => {
+    c.i32(3).i32(1).i32(4).bool(!!trap);
+    if (trap) c.str(trap);
+    c.bool(true).bool(true).str('MelvorBase:GoldenChicken').i32(2).bool(useBait).i32(0).bool(false).i32(1).bool(trapless);
+  };
+  const action = (c) => {
+    c.bool(false).bool(false).i32(0).i32(0).i32(0);
+    c.i32(2);
+    c.str('MelvorBase:WildChicken').region(hunt({ trap: 'MelvorBase:BasicSnare', useBait: true }));
+    c.str('MelvorBase:GreenButterfly').region(hunt({ trapless: true }));
+    c.bool(true).bool(false).bool(false).bool(false).bool(true);
+  };
+  const save = parseSave(buildSave({ skills: { Mining: lvl(10) }, extraEntities: [['MelvorBase:Hunting', [['Action', action]]]] }));
+  assert.deepEqual(save.huntingAnimals, {
+    WildChicken: { trap: 'MelvorBase:BasicSnare', useBait: true, trapless: false },
+    GreenButterfly: { trap: null, useBait: false, trapless: true },
+  });
+  assert.deepEqual(save.warnings, []);
+});
+
 test('reads the bonfire and each skill Aurora', () => {
   const bonfire = (c) => c.i32(1_728_000).i32(216_000).bool(false).bool(true).str('MelvorBase:Willow').bool(true);
   const aurora = (c) => c.bool(true).i32(0).i32(3600).i32(1200).bool(true).str('MelvorBase:WoodcuttingAurora').region((e) => e.bool(true).i32(42));

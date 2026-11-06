@@ -2,13 +2,13 @@
 // planned once and kept: each autosave only ticks off what you've done, so it doesn't change under you.
 import { currentActivity } from '/engine/advisor.js';
 import { bankRoom, freeSpaceOptions } from '/engine/bank-space.js';
-import { describeStep, GATHER_VERBS, lockRoute, routeProgress, STEP_VERBS } from '/engine/route-progress.js';
+import { describeStep, GATHER_VERBS, lockRoute, routeProgress, STEP_VERBS, trainEnd } from '/engine/route-progress.js';
 import { planRoute } from '/engine/route.js';
 import { shopOffer } from '/engine/shop.js';
 import { toolbeltForStep } from '/engine/toolbelt-advice.js';
 import { ago, badge, duration, esc, exact, pct } from '/ui/format.js';
 import { masteryPlanFor } from './mastery-ui.js';
-import { card, itemLink, memo, methodLink, saveKey, skillName } from './shared.js';
+import { card, huntingTodoNote, itemLink, memo, methodLink, saveKey, skillName } from './shared.js';
 
 // The method you're doing in the game (null when idle, fighting or not reading a save).
 export const currentMethodKey = (ctx) => (ctx.save && ctx.state.levelSource === 'save' ? currentActivity(ctx.gd, ctx.save.header, ctx.levels)?.method?.key ?? null : null);
@@ -39,7 +39,8 @@ export function stepLine(ctx, st) {
   }
   if (st.kind === 'train') {
     const n = left ? left.actions : st.actions;
-    return `${STEP_VERBS[st.method.kind] ?? 'Do'} ${methodLink(st.method)} × ${exact(n)}${left && n < st.actions ? ' more' : ''} <span class="muted">until ${skill} ${st.toLevel}</span>`;
+    const end = trainEnd(ctx.gd, st, { item: (id) => itemLink(ctx, id), skill });
+    return `${STEP_VERBS[st.method.kind] ?? 'Do'} ${methodLink(st.method)} × ${exact(n)}${left && n < st.actions ? ' more' : ''} <span class="muted">${end}</span>`;
   }
   const qty = Math.ceil(left?.qty ?? st.qty);
   const named = st.method.name.toLowerCase() === ctx.gd.itemName(st.item).toLowerCase();
@@ -154,7 +155,7 @@ function stepItem(ctx, leg, st, now, tools = '') {
   if (side.length) notes.push(`also gets you ${side.map((u) => `${esc(skillName(ctx, u.skill))} ${u.level}`).join(', ')}`);
   const mastery = masteryTasks(ctx, st.method.key).map((t) => `<span class="sub small accent-text">Counts for Mastery: ${esc(t.label)}${t.progress && !t.progress.level ? ` (${exact(Math.floor(t.progress.done))}/${exact(t.progress.of)})` : ''}</span>`);
   const cls = st === now ? (st.on ? ' class="now on"' : ' class="now"') : '';
-  return `<li${cls}>${tick(st)}<span class="route-text">${stepLine(ctx, st)}${st === now ? ` <span class="pill ${st.on ? 'good' : 'accent'}">${st.on ? "You're on this" : 'Next'}</span>` : ''}${notes.length ? `<span class="sub muted small">${notes.join(' · ')}</span>` : ''}${short}${buyNote(ctx, st)}${mastery.join('')}${tools}</span><span class="num">${duration(st.left.hours)}</span></li>`;
+  return `<li${cls}>${tick(st)}<span class="route-text">${stepLine(ctx, st)}${st === now ? ` <span class="pill ${st.on ? 'good' : 'accent'}">${st.on ? "You're on this" : 'Next'}</span>` : ''}${notes.length ? `<span class="sub muted small">${notes.join(' · ')}</span>` : ''}${short}${buyNote(ctx, st)}${huntingTodoNote(ctx, st.method)}${mastery.join('')}${tools}</span><span class="num">${duration(st.left.hours)}</span></li>`;
 }
 
 // The bank won't hold what the plan brings in: how many slots, from when, and the easiest ways to free them.
@@ -188,7 +189,7 @@ export function routeCard(ctx) {
   const goalOf = open.findIndex((l) => l.steps.includes(now));
   const nowTools = stepTools(ctx, now);
   const head = `<div class="route-now${now.on ? ' on' : ''}"><span><span class="route-label">${now.on ? "You're on it" : 'Do this now'}</span><strong>${stepLine(ctx, now)}</strong>
-    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${shortNote(ctx, now)}${buyNote(ctx, now)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
+    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${shortNote(ctx, now)}${buyNote(ctx, now)}${huntingTodoNote(ctx, now.method)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
   const goals = open.map((leg, i) => {
     const left = leg.steps.filter((st) => !st.done);
     const gathers = left.filter((st) => st.kind === 'gather' || st.kind === 'make');

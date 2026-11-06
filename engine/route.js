@@ -284,6 +284,7 @@ function fold(into, st) {
   into.xpGain += st.xpGain;
   if (st.qty != null) into.qty = (into.qty ?? 0) + st.qty;
   if (st.toLevel != null) into.toLevel = st.toLevel;
+  if (st.kind === 'train') into.limitedBy = st.limitedBy ?? null;
   for (const up of st.levelUps) {
     const have = into.levelUps.find((u) => u.skill === up.skill);
     if (have) have.level = Math.max(have.level, up.level);
@@ -374,7 +375,7 @@ function play(gd, sim, goal, clock, touched, index) {
         if (n.method && n.actions) run(n.makes ? 'make' : 'gather', n.method, n.actions, { item: n.item, qty: n.qty });
       }
     }
-    run('train', st.method, st.actions, { xp: st.xp, hours: st.hours, toLevel: st.toLevel });
+    run('train', st.method, st.actions, { xp: st.xp, hours: st.hours, toLevel: st.toLevel, limitedBy: st.limitedBy ?? null });
   }
   if (goal.kind === 'gear') {
     // Then make it: from the bank, gathering anything it's short of first.

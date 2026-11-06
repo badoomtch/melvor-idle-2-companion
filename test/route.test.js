@@ -6,7 +6,7 @@ import { createGameData } from '../engine/gamedata.js';
 import { planRank, rankValue } from '../engine/mastery-plan.js';
 import { computeRates } from '../engine/rates.js';
 import { BASE_VALUE, unlockValue } from '../engine/route-goals.js';
-import { lockRoute, routeProgress } from '../engine/route-progress.js';
+import { describeStep, lockRoute, routeProgress } from '../engine/route-progress.js';
 import { planRoute, planUses } from '../engine/route.js';
 
 const gd = createGameData(JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8')));
@@ -38,6 +38,31 @@ test('training uses what the bank has before gathering more, then carries on wit
   assert.ok(plan.gatherHours > 0, 'and the rest is gathered');
   // One method per stretch between unlocks: never two steps of the same method in a row.
   for (let i = 1; i < plan.steps.length; i++) assert.notEqual(plan.steps[i].method.key, plan.steps[i - 1].method.key);
+});
+
+test('a training step cut short by a material says so, not "until" a level you already have', () => {
+  // At Runecrafting 41 with runes for 14 Fire Battlewands: those first, then Body Runes to 45.
+  const levels = { ...at(99), Runecrafting: 41 };
+  const xp = Object.fromEntries(Object.entries(levels).map(([k, l]) => [k, gd.xp.xpForLevel(l)]));
+  const bank = { 'MelvorBase:UnpoweredOrb': 85, 'MelvorBase:FireRune': 296, 'MelvorBase:ChaosRune': 469 };
+  const [wands, runes] = planTraining(gd, 'Runecrafting', levels, xp.Runecrafting, 45, { bank }).steps;
+  assert.equal(wands.method.key, 'Runecrafting/FireBattlewand');
+  assert.equal(wands.actions, Math.floor(296 / 20));
+  assert.deepEqual([wands.fromLevel, wands.toLevel, wands.limitedBy], [41, 41, 'MelvorBase:FireRune']);
+  assert.equal(runes.toLevel, 45);
+  assert.equal(runes.limitedBy, null);
+  // The route keeps it, and says it in words.
+  const leg = planRoute(gd, { levels, xp, bank }).legs[0];
+  assert.equal(leg.skill, 'Runecrafting', 'every other skill is maxed');
+  const locked = lockRoute({ legs: [leg] });
+  const p = routeProgress(gd, locked, { levels, xp, bank });
+  const lines = p.legs[0].steps.filter((st) => st.kind === 'train').map((st) => describeStep(gd, st));
+  assert.equal(lines[0], 'Make Fire Battlewand × 14 for Runecrafting XP, until you run out of Fire Rune');
+  assert.match(lines[1], /until Runecrafting 45$/);
+  // A plan kept from before steps knew their material.
+  const old = JSON.parse(JSON.stringify(locked));
+  delete old.legs[0].steps.find((st) => st.kind === 'train').limitedBy;
+  assert.match(describeStep(gd, routeProgress(gd, old, { levels, xp, bank }).legs[0].steps.find((st) => st.kind === 'train')), /for Runecrafting XP, as far as your materials go$/);
 });
 
 test('the route never counts on more than the bank holds plus what its own steps gather or make', () => {

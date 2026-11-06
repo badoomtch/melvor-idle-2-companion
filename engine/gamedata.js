@@ -90,6 +90,9 @@ export function createGameData(raw) {
           if (!(gd.player.shopPurchases[r.id] > 0)) missing.push(r);
         } else if (r.type === 'technique' && gd.player?.techniques) {
           if ((gd.player.techniques[r.technique] ?? 1) < r.level) missing.push(r);
+        } else if (r.type === 'techniques' && gd.player?.techniques) {
+          // At least `count` Agility techniques at `level` or higher (trapless hunting for butterflies).
+          if (Object.values(gd.player.techniques).filter((l) => l >= r.level).length < r.count) missing.push(r);
         } else if (r.type === 'stat' && gd.player?.statistics?.[r.stat]) {
           // A statistic the save holds counts objects it has never recorded as 0.
           if ((gd.player.statistics[r.stat][r.id] ?? 0) < r.value) missing.push(r);
@@ -296,6 +299,8 @@ export function playerState(save, gd = null) {
     foods: save?.foods ?? null,
     // The fishing bait selected (one is used per catch while you have some).
     fishingBait: save?.fishingBait ?? null,
+    // Each Hunting animal's own settings in the game: { trap, useBait, trapless }.
+    huntingAnimals: save?.huntingAnimals ?? null,
     // The Astrology nodes you've unlocked, minor and major.
     astrologyNodes: save?.astrology ? Object.values(save.astrology).flatMap((c) => [...c.minor, ...c.major]) : null,
     prayers: save?.prayers ?? [],

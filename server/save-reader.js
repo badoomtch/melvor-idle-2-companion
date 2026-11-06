@@ -15,7 +15,7 @@ import { defaultXpTable } from '../engine/xp.js';
 // SaveVersion enum values used by the fields we read. LatestVerified is the newest version checked
 // against a real save (the Steam playtest build of 30 Oct 2026 writes 28: every region read to its
 // last byte, every skill's level matching its XP and every bank item known).
-export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, LatestVerified: 28 };
+export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_8_3: 15, Alpha0_9_0: 16, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, LatestVerified: 28 };
 
 export class SaveFormatError extends Error {}
 
@@ -448,6 +448,43 @@ function readHuntingJournal(region, version) {
     if (!Number.isFinite(xp) || xp < 0 || level < 1 || level > 1000) throw new SaveFormatError(`Implausible journal entry for ${id}`);
     // Every animal starts discovered; an undiscovered one tracks 4 times its most steps (ActiveHuntingAnimal).
     out[id] = discovered ? { level, xp } : { level, xp, discovered: false };
+  }
+  return out;
+}
+
+// HuntingActionComponent.WriteTo: the base action component's byte and the action timer (flag + 3 ints),
+// then each animal's id and, in a region, its hunt (ActiveHuntingAnimal.WriteTo): tracks, step, steps
+// needed, [bool, the trap selected], species rolled, [bool, the species], state, "Use Bait?", survey
+// fails, bait used (0.8.3 on), then trap misses and "Enable Trapless Hunting" (0.9.0 on). Each animal's
+// settings: { trap (full item id or null), useBait, trapless }.
+function readHuntingAction(region, version) {
+  const r = region;
+  r.bool();
+  r.bool();
+  r.i32();
+  r.i32();
+  r.i32();
+  const out = {};
+  for (let i = 0, n = r.count(1000, 'hunting animal'); i < n; i++) {
+    const id = localId(r.str());
+    const a = r.region();
+    a.i32();
+    a.i32();
+    a.i32();
+    const trap = a.bool() ? a.str() : null;
+    a.bool();
+    if (a.bool()) a.str();
+    const state = a.i32();
+    const useBait = a.bool();
+    a.i32();
+    if (version >= SaveVersion.Alpha0_8_3) a.bool();
+    let trapless = false;
+    if (version >= SaveVersion.Alpha0_9_0) {
+      a.i32();
+      trapless = a.bool();
+    }
+    if (state < 0 || state > 10 || (trap && !/^[A-Za-z0-9_]+:[A-Za-z0-9_]+$/.test(trap))) throw new SaveFormatError(`Implausible hunt for ${id}`);
+    out[id] = { trap, useBait, trapless };
   }
   return out;
 }
@@ -899,6 +936,14 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
         result.huntingJournal = readHuntingJournal(components.get('Journal'), version);
       } catch (e) {
         result.warnings.push(`Hunting journal: ${e.message}`);
+      }
+    }
+    // Each animal's own settings: the trap selected, "Use Bait?" and "Enable Trapless Hunting".
+    if (id === 'Hunting' && components.has('Action')) {
+      try {
+        result.huntingAnimals = readHuntingAction(components.get('Action'), version);
+      } catch (e) {
+        result.warnings.push(`Hunting animals: ${e.message}`);
       }
     }
     // The header names the course ("Climb 3"); which of its paths is running is only in here.

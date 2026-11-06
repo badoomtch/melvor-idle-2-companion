@@ -148,6 +148,11 @@ function normReqs(list) {
       out.push(statReq(data));
     } else if (type === 'AgilityTechniqueLevel' && data.Technique) {
       out.push({ type: 'technique', technique: local(data.Technique), level: data.Level ?? 1, label: `${displayOf('AgilityTechnique', data.Technique)} technique ${data.Level ?? 1}` });
+    } else if (type === 'AgilityNumTechniquesLevel') {
+      // AgilityNumTechniquesLevelCondition: at least NumTechniques techniques at Level or higher.
+      const count = data.NumTechniques ?? 1;
+      const level = data.Level ?? 1;
+      out.push({ type: 'techniques', count, level, label: `${count} Agility technique${count === 1 ? '' : 's'} at level ${level}` });
     } else if (type === 'QuestComplete' && data.Quest) {
       const quest = (O.Quest ?? []).find((q) => full(q.Id) === full(data.Quest));
       out.push({ type: 'quest', quest: local(data.Quest), label: `Finish the quest ${quest?.DisplayName ?? humanize(local(data.Quest))}` });

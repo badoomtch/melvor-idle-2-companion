@@ -15,6 +15,14 @@
   - A source you can't do yet says what it needs.
 
   For Bird Nests, every tree you can cut (about 9.5 an hour) now comes before the Bandit Woodcutter (2.5 an hour, and it can kill you).
+- **Plan steps no longer say "until" a level you already have.** When your bank only has materials for part of a level, the plan uses them up and then moves to something else. That step gains no level, but it still said "Make Fire Battlewand × 16 more until Runecrafting 41" when you were already 41. It now says "for Runecrafting XP, until you run out of Fire Rune". Plans made before this update say "as far as your materials go". The skill page's training path says "at level 41" for these steps in place of "level 41 → 41".
+- **Hunting says what to tick in the game.** With no Butterfly Kit, the plan said "Hunt Green Butterfly" and counted on trapless hunting, but never said the game only does that with "Enable Trapless Hunting" ticked for that animal. The companion now reads each animal's settings from your save. Plan steps and method details say what's missing:
+  - tick "Enable Trapless Hunting" when the plan counts on it;
+  - tick "Use Bait?" when it counts on bait, since the game only uses bait with it ticked;
+  - select a trap you have, when none is selected or you've run out of the one that is.
+
+  An animal with trapless hunting ticked is now planned without traps, as the game hunts it.
+- **Trapless hunting checks your Agility techniques.** Butterflies can be hunted without a trap from a Hunting level once enough Agility techniques are high enough (2 at level 10 for the Green Butterfly). The companion didn't read that condition and assumed you had it. It now checks your technique levels from the save.
 
 ## 0.4.2
 

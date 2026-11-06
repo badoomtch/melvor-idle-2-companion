@@ -494,14 +494,38 @@ function toolUse(gd, method, c, acc, effects) {
 }
 
 // How you'd hunt an animal with what you have: its bait while you have some, and trapless when it's
-// allowed and you have no trap for it. Their bonuses count like any other.
+// allowed and either switched on in the game or you have no trap for it. Their bonuses count like any other.
 function huntingChoices(gd, method) {
   const owned = gd.player?.owned;
   if (method.kind !== 'hunting' || !owned) return null;
   const bait = method.bait && owned[method.bait.item] > 0 ? method.bait : null;
   const hasTrap = (method.traps ?? []).some((t) => owned[t.item] > 0);
-  const trapless = method.trapless && !hasTrap && gd.player.levels && gd.checkRequirements({ skill: null, level: 0, requires: method.trapless.requires }, gd.player.levels).ok ? method.trapless : null;
+  const allowed = method.trapless && gd.player.levels && gd.checkRequirements({ skill: null, level: 0, requires: method.trapless.requires }, gd.player.levels).ok;
+  const trapless = allowed && (!hasTrap || gd.player.huntingAnimals?.[method.id]?.trapless) ? method.trapless : null;
   return { bait: bait?.item ?? null, trapless: !!trapless, effects: [...(bait?.effects ?? []), ...(trapless?.effects ?? [])] };
+}
+
+/**
+ * What to set on an animal's page in the game for the companion's numbers to hold, from the save's
+ * settings for it (ActiveHuntingAnimal): "Enable Trapless Hunting" when they count on hunting without a
+ * trap, "Use Bait?" when they count on its bait (the game only uses bait with it ticked), and otherwise a
+ * trap you have some of (with none selected the game won't hunt). Anything the save shows is already set
+ * is left out; with no save settings, all of it is listed.
+ * @returns [{ kind: 'trapless' } | { kind: 'bait', item } | { kind: 'trap', item }]
+ */
+export function huntingTodo(gd, method) {
+  const c = huntingChoices(gd, method);
+  if (!c) return [];
+  const saved = gd.player.huntingAnimals?.[method.id] ?? null;
+  const out = [];
+  if (c.trapless && !saved?.trapless) out.push({ kind: 'trapless' });
+  if (c.bait && !saved?.useBait) out.push({ kind: 'bait', item: c.bait });
+  if (!c.trapless) {
+    const trap = huntingTrap(gd, method, {});
+    const have = (item) => (gd.player.owned[item] ?? 0) > 0;
+    if (trap && have(trap.item) && !(saved?.trap && have(saved.trap))) out.push({ kind: 'trap', item: trap.item });
+  }
+  return out;
 }
 
 export function computeRates(gd, method, level = method.level, options = {}) {

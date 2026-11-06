@@ -2,6 +2,7 @@
 import { describeRequirement, GP } from '/engine/gamedata.js';
 import { idleDanger } from '/engine/idle-danger.js';
 import { thievingDrops, triesFor } from '/engine/lookup.js';
+import { huntingTodo } from '/engine/rates.js';
 import { duration, esc, exact, gp, iconImg, iconUrl, num, pct } from '/ui/format.js';
 
 export const enc = encodeURIComponent;
@@ -80,6 +81,20 @@ export function dangerText(ctx, d, skill) {
   return `A failure hits for up to ${exact(d.biggestHit)}, but auto-eat waits until you're at ${exact(d.autoEatAt)} HP, so one hit can take you from ${exact(d.autoEatAt + 1)} to 0: ${every}. Dying stops ${skillName(ctx, skill)} and can lose one of its toolbelt items.${fix}`;
 }
 
+// What to set on a hunting animal's page in the game for the companion's numbers to hold, as a line of
+// HTML (empty when it's all set, or not a hunting method). A warning when the game won't hunt without
+// it (no trap selected, or trapless not ticked with no trap); bait only makes it quicker.
+export function huntingTodoNote(ctx, method) {
+  const todo = huntingTodo(ctx.gd, method);
+  if (!todo.length) return '';
+  const ticks = todo.filter((t) => t.kind !== 'trap').map((t) => (t.kind === 'trapless' ? '"Enable Trapless Hunting"' : '"Use Bait?"'));
+  const trap = todo.find((t) => t.kind === 'trap');
+  const what = [ticks.length ? `tick ${ticks.join(' and ')}` : '', trap ? `select ${itemLink(ctx, trap.item)} as its trap` : ''].filter(Boolean).join(' and ');
+  const why = todo.find((t) => t.kind === 'trapless') ? ' It needs no trap that way.' : '';
+  const blocking = todo.some((t) => t.kind !== 'bait');
+  return `<span class="sub small ${blocking ? 'warn-text' : 'accent-text'}">On its page in the game, ${what}.${why}</span>`;
+}
+
 // A warning pill for a method that can kill you while it runs.
 export function dangerPill(ctx, r) {
   const d = idleDanger(ctx.gd, r);
@@ -129,6 +144,7 @@ export function methodDetail(ctx, x) {
     <div><h4>Each action</h4><p>${(r.msPerCycle / 1000).toFixed(r.msPerCycle < 10000 ? 2 : 1)}s${r.note ? ` · ${esc(r.note)}` : ''}</p>
       ${r.successChance != null ? `<p>Success chance ${pct(r.successChance, 1)}</p>` : ''}
       ${danger?.risky ? `<p class="small warn-text">${esc(dangerText(ctx, danger, m.skill))}</p>` : ''}
+      ${m.kind === 'hunting' ? `<p>${huntingTodoNote(ctx, m)}</p>` : ''}
       <p class="muted small">${num(r.cyclesPerHour)} per hour</p>
       ${reqs.length ? `<p class="small">Requires: ${requirementText(ctx, reqs)}</p>` : ''}</div>
     <div><h4>Gains per hour</h4>${li(gains)}</div>

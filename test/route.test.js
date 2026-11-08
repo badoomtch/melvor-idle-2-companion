@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { minEach, planTraining } from '../engine/advisor.js';
+import { minEach, obtainEach, planTraining, producerIndex } from '../engine/advisor.js';
 import { createGameData } from '../engine/gamedata.js';
 import { planRank, rankValue } from '../engine/mastery-plan.js';
 import { computeRates } from '../engine/rates.js';
@@ -194,6 +194,49 @@ test('a locked route gets you more of something you ran out of before the step t
   assert.equal(gone.step.item, 'MelvorBase:RawShrimp');
 });
 
+test('running short part-way through a goal gets you enough for the rest of it in one go', () => {
+  // Two runs of cooking shrimp in one goal, and no shrimp: one catch for both, not one before each.
+  const levels = at(30);
+  const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(30)]));
+  const shrimp = gd.methodByKey.get('Cooking/Shrimp');
+  const r = computeRates(gd, shrimp, 30);
+  const xpEach = r.xpPerHour / r.cyclesPerHour;
+  const run = (after) => ({ kind: 'train', method: shrimp, actions: 100, hours: 100 / r.cyclesPerHour, xpGain: 100 * xpEach, xpAfter: xp.Cooking + after * xpEach, toLevel: 30, levelUps: [] });
+  const leg = { kind: 'unlock', skill: 'Cooking', from: 30, to: 31, unlocks: [], steps: [run(100), run(200)] };
+  const p = routeProgress(gd, lockRoute({ legs: [leg] }), { levels, xp, bank: {} });
+  const tops = p.legs[0].steps.filter((st) => st.topUp);
+  assert.equal(tops.length, 1, tops.map((t) => `${t.method.key} ${t.qty}`).join(', '));
+  assert.equal(tops[0].item, 'MelvorBase:RawShrimp');
+  assert.ok(tops[0].qty >= 200 - 1e-6, `catches ${tops[0].qty}`);
+  assert.ok(!p.legs[0].steps.at(-1).short, 'the second run is covered');
+  assert.equal(p.short, null);
+});
+
+test('materials for one recipe share the bank: two that need the same item can not both count on it', () => {
+  const index = producerIndex(gd, at(50));
+  const stock = new Map([['MelvorBase:String', 100]]);
+  const [a, b] = obtainEach(index, stock, [{ item: 'MelvorBase:String', qty: 80 }, { item: 'MelvorBase:String', qty: 80 }]);
+  assert.equal(a.short, 0);
+  close(b.short, 60);
+  assert.equal(stock.get('MelvorBase:String'), 100, 'the bank itself is left alone');
+});
+
+test('long material chains are crafted, not pickpocketed: Thornback Camo needs spikes, Nets, Rope and String', () => {
+  // Spikes are hunted with Nets, Nets are made from Rope and String, String from Flax. With none of it in
+  // the bank, every String and Rope comes from Crafting, not hundreds of Craftsman or Thug pickpockets
+  // (Wool for the Rope still comes from the Crafting Stall: nothing else gives it).
+  const levels = { ...at(60), Beastcrafting: 28 };
+  const bank = { 'MelvorBase:Leather': 400, 'MelvorBase:Feathers': 64 };
+  const plan = planTraining(gd, 'Beastcrafting', levels, gd.xp.xpForLevel(28), 31, { bank });
+  assert.ok(Number.isFinite(plan.hours));
+  const all = plan.steps.flatMap((st) => st.gather.flatMap((g) => [...g.needs, g]));
+  const ways = (item) => new Set(all.filter((n) => n.item === item).map((n) => n.method?.key));
+  assert.ok(all.some((n) => n.item === 'MelvorBase:ThornbackLizardSpike'), 'a camo piece with spikes is in the plan');
+  assert.deepEqual([...ways('MelvorBase:String')], ['Crafting/String']);
+  for (const key of ways('MelvorBase:Rope')) assert.equal(gd.methodByKey.get(key).skill, 'Crafting');
+  assert.ok(ways('MelvorBase:Rope').size > 0, 'Rope for the Nets is in the chain');
+});
+
 test('a locked route ticks steps off by itself, in whatever order you do them', () => {
   const levels = at(25);
   const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(25)]));
@@ -269,6 +312,9 @@ test('plans use your measured speed: half as fast takes twice as long, and the t
   const locked = lockRoute({ legs: [{ kind: 'unlock', skill: 'Woodcutting', from: 10, to: 15, unlocks: [], steps: [{ kind: 'train', method: gd.methodByKey.get(key), actions: slow.steps[0].actions, hours: slow.hours, xpAfter: gd.xp.xpForLevel(15), xpGain: gd.xp.xpForLevel(15) - xp.Woodcutting, toLevel: 15, levelUps: [] }] }] }, { speed: { [key]: 0.5 } });
   const p = routeProgress(gd, locked, { levels, xp, bank: {} });
   close(p.step.left.hours, slow.hours, 0.02);
+  // Slower means fewer actions an hour, not more logs from each one.
+  const r = computeRates(gd, gd.methodByKey.get(key), 10);
+  for (const [item, each] of p.step.makes) close(each, r.outputs.find((o) => o.item === item).perHour / r.cyclesPerHour);
 });
 
 test('the plan warns when what it brings in will not fit in your bank', () => {

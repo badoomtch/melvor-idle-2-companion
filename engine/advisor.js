@@ -116,11 +116,17 @@ export function producerIndex(gd, levels) {
   return index;
 }
 
+// How many steps deep a material chain can go. Hunting's are long: Rabbit Fur needs Snares, which need
+// Rope, which needs String, which needs Flax. Too short and the bottom of a chain can only come from
+// something that needs nothing (pickpocketing String from a Craftsman, hundreds of attempts for what
+// a few crafts make).
+export const MATERIAL_DEPTH = 6;
+
 // The quickest way to have `qty` of an item: bank stock first, then gathering or making the rest in
-// whole actions (up to three steps deep, e.g. mine ore -> smelt bars -> smith). Reads the stock; doesn't
+// whole actions (up to `depth` steps deep, e.g. mine ore -> smelt bars -> smith). Reads the stock; doesn't
 // change it. `needs` lists what has to be gathered or made before `method` can run, deepest first, each
 // with its own { actions, hours }; `actions` and `runHours` are this item's own step.
-export function obtain(index, stock, item, qty, depth = 3, prefer = null) {
+export function obtain(index, stock, item, qty, depth = MATERIAL_DEPTH, prefer = null) {
   const fromStock = Math.min(Math.max(0, stock.get(item) ?? 0), qty);
   const short = qty - fromStock;
   const uses = fromStock > 0 ? [{ item, qty: fromStock }] : [];
@@ -133,8 +139,8 @@ export function obtain(index, stock, item, qty, depth = 3, prefer = null) {
     let hours = run.hours;
     const subUses = [];
     const needs = [];
-    for (const i of p.rates.inputs) {
-      const sub = obtain(index, stock, i.item, inputFor(p.rates, i, run.actions), depth - 1, prefer);
+    const subs = obtainEach(index, stock, p.rates.inputs.map((i) => ({ item: i.item, qty: inputFor(p.rates, i, run.actions) })), depth - 1, prefer);
+    for (const sub of subs) {
       hours += sub.hours;
       subUses.push(...sub.uses);
       if (sub.short > 0) needs.push(...sub.needs, { item: sub.item, qty: sub.short, method: sub.method, makes: sub.makes, actions: sub.actions, hours: sub.runHours });
@@ -145,6 +151,21 @@ export function obtain(index, stock, item, qty, depth = 3, prefer = null) {
   }
   if (!best) return { item, short, hours: Infinity, method: null, uses, needs: [] };
   return { item, short, hours: best.hours, method: best.method, makes: best.makes, actions: best.run.actions, runHours: best.run.hours, made: best.made, uses: [...uses, ...best.uses], needs: best.needs };
+}
+
+// What's left of `stock` (anything with get()) once `taken` is spoken for.
+const remaining = (stock, taken) => ({ get: (k) => Math.max(0, (stock.get(k) ?? 0) - (taken.get(k) ?? 0)) });
+
+// obtain() for each of a recipe's materials in turn ([{ item, qty }]), each from what the ones before it
+// left in the bank: Thornback Camo Legs use String, and so do the Nets their spikes are hunted with, so
+// the two can't both count on the same String.
+export function obtainEach(index, stock, wants, depth = MATERIAL_DEPTH, prefer = null) {
+  const taken = new Map();
+  return wants.map(({ item, qty }) => {
+    const got = obtain(index, taken.size ? remaining(stock, taken) : stock, item, qty, depth, prefer);
+    for (const u of got.uses) taken.set(u.item, (taken.get(u.item) ?? 0) + u.qty);
+    return got;
+  });
 }
 
 // Rates for planning, worked out once per method, and per level only for methods that change with level
@@ -236,7 +257,7 @@ function pickMethod(gd, skill, levels, level, xp, until, stock, index, prev, pre
     const full = runFor(gd, method, level, xp, until);
     if (!full.actions) continue;
     if (best && ((full.hours + switchIn * SWITCH_HOURS) / full.xp) * keep(prefer, method.key) >= best.score) continue;
-    const materials = stock ? rates.inputs.map((i) => obtain(index, stock, i.item, Math.max(full.need.get(i.item) ?? 0, minEach(method, i.item)), 3, prefer)) : [];
+    const materials = stock ? obtainEach(index, stock, rates.inputs.map((i) => ({ item: i.item, qty: Math.max(full.need.get(i.item) ?? 0, minEach(method, i.item)) })), MATERIAL_DEPTH, prefer) : [];
     const gather = materials.reduce((s, m) => s + m.hours, 0);
     const chains = materials.reduce((n, m) => n + (m.short > 0 ? 1 + m.needs.length : 0), 0);
     consider({ rates, ...full, gather, total: full.hours + gather, cost: full.hours + gather + (switchIn + chains) * SWITCH_HOURS, materials });

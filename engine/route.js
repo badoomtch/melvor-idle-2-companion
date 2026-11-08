@@ -8,7 +8,7 @@
 // in the first goal that needs it, a skill at a time, before that goal trains. The goal you're working on
 // in the game stays first until it's done, and an earlier route's choices (`prefer`) keep winning unless
 // something is clearly better, so the route doesn't change under you with every autosave. Isomorphic.
-import { KEEP, obtain, planRates, planTraining, producerIndex, SWITCH_HOURS } from './advisor.js';
+import { KEEP, MATERIAL_DEPTH, obtain, planRates, planTraining, producerIndex, SWITCH_HOURS } from './advisor.js';
 import { computeRates } from './rates.js';
 import { baselineProfit, levelLockedShop, unlockValue } from './route-goals.js';
 
@@ -329,7 +329,7 @@ function extraCandidate(gd, sim, x, { index, last, prefer }) {
   if (x.kind === 'gear') {
     const plan = level < x.to ? planTraining(gd, x.skill, sim.levels, sim.xp[x.skill], x.to, { bank: sim.stock, index, current: last, prefer }) : null;
     if (plan?.blocked) return null;
-    const make = sim.stock ? obtain(index, sim.stock, x.item, 1, 3, prefer) : null;
+    const make = sim.stock ? obtain(index, sim.stock, x.item, 1, MATERIAL_DEPTH, prefer) : null;
     if (make && !Number.isFinite(make.hours)) return null;
     const chain = make ? [...make.needs, make] : [];
     return { ...x, from: level, plan, label: gd.itemName(x.item), hours: (plan?.hours ?? 0) + (make?.hours ?? 0),

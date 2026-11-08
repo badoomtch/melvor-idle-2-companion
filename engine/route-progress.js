@@ -87,13 +87,14 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
         const actions = xpEach > 0 ? Math.ceil(xpLeft / xpEach - 0.5) : 0;
         left = { actions: Math.max(0, actions), qty: null, hours: Math.max(0, actions) / rates.cyclesPerHour };
       } else {
-        const each = (rates.outputs.find((o) => o.item === saved.item)?.perHour ?? 0) / rates.cyclesPerHour;
+        const each = (base.outputs.find((o) => o.item === saved.item)?.perHour ?? 0) / base.cyclesPerHour;
         const qty = Math.min(saved.qty ?? Infinity, Math.max(0, saved.target - (bank[saved.item] ?? 0)));
         const actions = each > 0 ? Math.ceil(qty / each - 0.5) : 0;
         left = { actions: Math.max(0, actions), qty, hours: Math.max(0, actions) / rates.cyclesPerHour };
       }
-      const uses = new Map(rates.inputs.map((i) => [i.item, i.perHour / rates.cyclesPerHour]));
-      const makes = new Map(rates.outputs.map((o) => [o.item, o.perHour / rates.cyclesPerHour]));
+      // Per action: your speed changes how many actions an hour, not what each one uses or makes.
+      const uses = new Map(base.inputs.map((i) => [i.item, i.perHour / base.cyclesPerHour]));
+      const makes = new Map(base.outputs.map((o) => [o.item, o.perHour / base.cyclesPerHour]));
       return { ...saved, method, left, fromBank: left, uses, makes, levelUps: saved.levelUps };
     });
     return { ...leg, unlocks: leg.unlocks.map((k) => gd.methodByKey.get(k)).filter(Boolean), steps };
@@ -165,13 +166,17 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
           if (need - have >= each && !st.short) {
             st.short = { item, need: Math.ceil(need), have: Math.floor(have) };
             index ??= producerIndex(gd, levels);
-            const top = topUp(gd, index, stock, item, st.short.need - st.short.have, st.id);
+            // Enough for the rest of this goal in one go, not a top-up before every step that runs short:
+            // what the steps after it still use, less what they make.
+            const ahead = leg.steps.slice(i + 1).filter((x) => !x.done).reduce((sum, x) => sum + ((x.uses.get(item) ?? 0) - (x.makes.get(item) ?? 0)) * x.left.actions, 0);
+            const qty = st.short.need - st.short.have + Math.max(0, Math.ceil(ahead - 1e-9));
+            const top = topUp(gd, index, stock, item, qty, st.id);
             if (top) {
               st.short.topUp = true;
               leg.steps.splice(i, 0, ...top.steps);
               i += top.steps.length;
               for (const u of top.uses) stock[u.item] = (stock[u.item] ?? 0) - u.qty;
-              stock[item] = have + (st.short.need - st.short.have);
+              stock[item] = have + qty;
             } else short ??= { step: st.id, ...st.short };
           }
           stock[item] = (stock[item] ?? 0) - need;

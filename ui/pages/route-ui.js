@@ -121,6 +121,15 @@ function goalTools(ctx, steps) {
   return new Map([...groups.values()].map((g) => [g.first, toolsLine(ctx, g.t, g.hours, g.steps)]));
 }
 
+// What the step uses up, so you can tell it from a recipe that looks the same in the game ("Uses 22
+// Rabbit Fur, 66 Leather and 66 String").
+function usesNote(ctx, st) {
+  const list = [...(st.uses ?? [])].map(([item, each]) => [item, Math.ceil(each * (st.left?.actions ?? st.actions) - 1e-9)]).filter(([, n]) => n > 0);
+  if (!list.length) return '';
+  const parts = list.map(([item, n]) => `${exact(n)} ${itemLink(ctx, item)}`);
+  return `<span class="sub muted small">Uses ${parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0]}</span>`;
+}
+
 // A step your bank won't cover any more (counting what the steps before it make and use).
 function shortNote(ctx, st) {
   if (!st.short) return '';
@@ -189,7 +198,7 @@ export function routeCard(ctx) {
   const goalOf = open.findIndex((l) => l.steps.includes(now));
   const nowTools = stepTools(ctx, now);
   const head = `<div class="route-now${now.on ? ' on' : ''}"><span><span class="route-label">${now.on ? "You're on it" : 'Do this now'}</span><strong>${stepLine(ctx, now)}</strong>
-    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${shortNote(ctx, now)}${buyNote(ctx, now)}${huntingTodoNote(ctx, now.method)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
+    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${usesNote(ctx, now)}${shortNote(ctx, now)}${buyNote(ctx, now)}${huntingTodoNote(ctx, now.method)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
   const goals = open.map((leg, i) => {
     const left = leg.steps.filter((st) => !st.done);
     const gathers = left.filter((st) => st.kind === 'gather' || st.kind === 'make');

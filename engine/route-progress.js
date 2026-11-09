@@ -146,19 +146,27 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
     return computeRates(gd, st.method, gd.levelOf(levels, st.method.skill)).inputs.find((i) => (bank[i.item] ?? 0) < minEach(st.method, i.item))?.item ?? null;
   };
   for (const leg of legs) for (const st of leg.steps) st.done = done.has(st.id);
-  // Every step still to do, in order, against your bank as the steps before it will leave it (what they
-  // make added, what they use taken away). A step that won't have what it needs, because you used it on
-  // something else, sold it, or had bad luck, is marked short. When something you can do now makes up the
-  // shortfall, top-up steps go in just before it and the plan carries on (they drop off once your bank
-  // covers it); only a shortfall nothing can make (`short`) means the plan no longer works.
+  // Every step still to do, in the order you'll do them, against your bank as the steps before it will
+  // leave it (what they make added, what they use taken away). A goal stocks up before it trains, as the
+  // page lists it, even when the training came first in the plan because you were already doing it; only
+  // stocking up that needs what the training makes waits for it. A step that won't have what it needs,
+  // because you used it on something else, sold it, or had bad luck, is marked short. When something you
+  // can do now makes up the shortfall, the goal's own step for that item does more (one step, not two for
+  // the same thing), or a top-up step goes in just before it; either way the plan carries on and the extra
+  // drops off once your bank covers it. Only a shortfall nothing can make (`short`) means the plan no
+  // longer works.
   let short = null;
   if (bank) {
     const stock = { ...bank };
     let index = null;
+    const trains = (st) => st.kind === 'train' || st.kind === 'task';
     for (const leg of legs) {
-      for (let i = 0; i < leg.steps.length; i++) {
-        const st = leg.steps[i];
-        if (st.done) continue;
+      const trainMakes = new Set(leg.steps.filter(trains).flatMap((st) => [...st.makes.keys()]));
+      const first = leg.steps.filter((st) => !trains(st) && ![...st.uses.keys()].some((i) => trainMakes.has(i)));
+      const order = [...first, ...leg.steps.filter((st) => !first.includes(st))];
+      const seen = new Set();
+      order.forEach((st, k) => {
+        if (st.done) return;
         for (const [item, each] of st.uses) {
           const need = each * st.left.actions;
           const have = Math.max(0, stock[item] ?? 0);
@@ -168,13 +176,21 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
             index ??= producerIndex(gd, levels);
             // Enough for the rest of this goal in one go, not a top-up before every step that runs short:
             // what the steps after it still use, less what they make.
-            const ahead = leg.steps.slice(i + 1).filter((x) => !x.done).reduce((sum, x) => sum + ((x.uses.get(item) ?? 0) - (x.makes.get(item) ?? 0)) * x.left.actions, 0);
+            const ahead = order.slice(k + 1).filter((x) => !x.done).reduce((sum, x) => sum + ((x.uses.get(item) ?? 0) - (x.makes.get(item) ?? 0)) * x.left.actions, 0);
             const qty = st.short.need - st.short.have + Math.max(0, Math.ceil(ahead - 1e-9));
             const top = topUp(gd, index, stock, item, qty, st.id);
             if (top) {
               st.short.topUp = true;
-              leg.steps.splice(i, 0, ...top.steps);
-              i += top.steps.length;
+              const extra = [];
+              for (const part of top.steps) {
+                // The same thing already lined up in this goal (and counted above): it does more instead.
+                const twin = leg.steps.find((x) => seen.has(x) && !x.done && !x.topUp && x.kind === part.kind && x.method.key === part.method.key && x.item === part.item);
+                if (twin) {
+                  twin.left = { actions: twin.left.actions + part.actions, qty: (twin.left.qty ?? 0) + part.qty, hours: twin.left.hours + part.hours };
+                  twin.extra = (twin.extra ?? 0) + part.qty;
+                } else extra.push(part);
+              }
+              leg.steps.splice(leg.steps.indexOf(st), 0, ...extra);
               for (const u of top.uses) stock[u.item] = (stock[u.item] ?? 0) - u.qty;
               stock[item] = have + qty;
             } else short ??= { step: st.id, ...st.short };
@@ -182,7 +198,8 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
           stock[item] = (stock[item] ?? 0) - need;
         }
         for (const [item, each] of st.makes) stock[item] = (stock[item] ?? 0) + each * st.left.actions;
-      }
+        seen.add(st);
+      });
     }
   }
   let at = 0;

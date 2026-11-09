@@ -51,7 +51,7 @@ export function stepLine(ctx, st) {
 function progressNote(st) {
   if (st.done || !st.left || st.kind === 'task') return '';
   if (st.kind === 'train') return st.left.actions < st.actions ? `${exact(st.actions - st.left.actions)} of ${exact(st.actions)} done` : '';
-  const total = Math.ceil(st.qty);
+  const total = Math.ceil(st.qty + (st.extra ?? 0));
   const left = Math.ceil(st.left.qty ?? total);
   return left < total ? `${exact(total - left)} of ${exact(total)} done` : '';
 }
@@ -159,6 +159,7 @@ function stepItem(ctx, leg, st, now, tools = '') {
   const progress = progressNote(st);
   if (progress) notes.push(progress);
   if (st.topUp) notes.push('added because you have less than the plan expected');
+  if (st.extra > 0) notes.push(`${exact(Math.ceil(st.extra))} more than planned, because you have less than the plan expected`);
   const short = shortNote(ctx, st);
   const side = st.levelUps.filter((u) => st.kind !== 'train' || u.skill !== leg.skill);
   if (side.length) notes.push(`also gets you ${side.map((u) => `${esc(skillName(ctx, u.skill))} ${u.level}`).join(', ')}`);

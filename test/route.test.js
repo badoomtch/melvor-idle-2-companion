@@ -212,6 +212,34 @@ test('running short part-way through a goal gets you enough for the rest of it i
   assert.equal(p.short, null);
 });
 
+test('a goal never lists the same thing twice: its own step for an item does more instead of a top-up', () => {
+  // Cooking shrimp came first in the plan (you were doing it), then catching 50 shrimp. Stocking up
+  // counts first, as the page lists it; with none in the bank, the catch grows to 100.
+  const levels = at(30);
+  const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(30)]));
+  const RAW = 'MelvorBase:RawShrimp';
+  const cook = gd.methodByKey.get('Cooking/Shrimp');
+  const r = computeRates(gd, cook, 30);
+  const xpEach = r.xpPerHour / r.cyclesPerHour;
+  const fish = obtainEach(producerIndex(gd, levels), new Map(), [{ item: RAW, qty: 50 }])[0];
+  const train = { kind: 'train', method: cook, actions: 100, hours: 100 / r.cyclesPerHour, xpGain: 100 * xpEach, xpAfter: xp.Cooking + 100 * xpEach, toLevel: 30, levelUps: [] };
+  // Planned with 50 in the bank: catch 50 more, to have 100.
+  const gather = { kind: 'gather', method: fish.method, item: RAW, actions: fish.actions, hours: fish.runHours, qty: 50, target: 100, xpGain: 0, xpAfter: 0, levelUps: [] };
+  const run = (bank) => routeProgress(gd, lockRoute({ legs: [{ kind: 'unlock', skill: 'Cooking', from: 30, to: 31, unlocks: [], steps: [train, gather] }] }), { levels, xp, bank, current: cook.key }).legs[0].steps;
+  // The 50 you'll catch and the 50 you have cover it: no extra. (Counted in the order the plan has them,
+  // the cooking would have looked short and got a catching step of its own.)
+  const enough = run({ [RAW]: 50 });
+  assert.equal(enough.length, 2);
+  assert.ok(!enough.some((st) => st.topUp || st.extra || st.short));
+  // None in the bank (you used them on something else): one catching step for all 100.
+  const steps = run({});
+  assert.equal(steps.filter((st) => st.item === RAW).length, 1, steps.map((st) => `${st.method.key} ${st.item}`).join(', '));
+  const one = steps.find((st) => st.item === RAW);
+  assert.ok(one.left.qty >= 100 - 1e-6, `catches ${one.left.qty}`);
+  close(one.extra, one.left.qty - 50);
+  assert.ok(!steps.some((st) => st.topUp));
+});
+
 test('materials for one recipe share the bank: two that need the same item can not both count on it', () => {
   const index = producerIndex(gd, at(50));
   const stock = new Map([['MelvorBase:String', 100]]);

@@ -1,13 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.4.3
 
 ### Fixed
 
 - **Plans craft long material chains instead of pickpocketing the bottom of them.** The planner only looked 3 steps deep for materials, and beyond that it only used sources that need nothing, which means pickpocketing. Hunting chains are longer: Thornback Lizard Spikes are hunted with Nets, Nets need Rope and String, String needs Flax. So a Beastcrafting goal sent you to the Craftsman for 40 String (437 pickpockets) and the Thug for Rope, while another step in the same goal crafted String anyway. It now looks 6 steps deep. For Beastcrafting 28 to 31 with an empty bank, the plan goes from about 3h 26m to 1h 16m.
 - **Materials for one recipe no longer count on the same bank twice.** Thornback Camo pieces use String, and so do the Nets their spikes are hunted with. Each was worked out as if it had all your String, so the plan made too little and you ran short part-way. Each material now comes out of what the others leave.
 - **Running short part-way through a goal gets you enough for the rest of it in one go.** The companion added a top-up before each step that ran out, so you made String three times for one goal. A top-up now covers every later step in that goal that uses the item.
-- **A goal never lists the same thing twice.** When the plan put the training you were already doing first in a goal, the shortfall check counted it before the goal's own stocking up. The training looked short, so it got a top-up of its own: "Make 20 Sapphire", added because you had less than expected, then the goal's "Make 56 more Sapphire" right after. Stocking up now counts first, as the page lists it. When you really are short, the goal's own step for that item does more ("20 more than planned") in place of a second step.
+- **A goal never lists the same thing twice.** When the plan put the training you were already doing first in a goal, the shortfall check counted it before the goal's own stocking up. The training looked short, so it got a top-up of its own: "Make 20 Sapphire", added because you had less than expected, then the goal's "Make 56 more Sapphire" right after. Stocking up now counts first, as the page lists it. When you really are short, the goal's own step for that item does more ("20 more than planned") in place of a second step. It makes the extra the same way as that step, even if another way would now be quicker.
+
+  Training is one run per method too. A plan could leave a method for a short detour (a few of something better while your materials last) and come back to it: "Mithril 2H Crossbow × 75", "Mithril Spear × 30", "Mithril 2H Crossbow × 32". The runs now join, with the detour after them: "Mithril 2H Crossbow × 107", then "Mithril Spear × 30". It's the same actions and XP. This applies to plans and to each skill's training path.
 - **"Do this now" lists what the step uses**, for example "Uses 22 Rabbit Fur, 66 Leather and 66 String", so a step can't be mixed up with a similar-looking recipe in the game.
 - **Your measured speed no longer changes what each action uses.** Being a little slower than the estimate means fewer actions an hour, but the plan also counted more material per action (about 2% in one case). That made shortfall warnings come early and gathering steps a little too long.
 

@@ -365,13 +365,54 @@ export function planTraining(gd, skill, levels, xpNow, targetLevel, { bank = nul
     hours,
     trainHours,
     gatherHours,
-    steps,
+    steps: joinRuns(gd, steps, xpNow, target),
     // Anything past what you had came from a gathering step's leftovers, not the bank.
     uses: [...uses].map(([item, qty]) => ({ item, qty: Math.min(qty, start?.get(item) ?? 0), have: start?.get(item) ?? 0 })).filter((u) => u.qty > 0),
     gather,
     blocked: !Number.isFinite(hours),
     endXp: xp,
   };
+}
+
+// One run per method. A plan can leave a method for a short detour (a few of something better while your
+// materials last) and come back to it: Mithril 2H Crossbow × 75, Mithril Spear × 30, Mithril 2H Crossbow
+// × 32. The second run joins the first, with its materials, and the detour follows it, so it's 107 then 30.
+// That's the same actions and XP, and every detour still comes after the level it was picked at. Levels
+// follow the new order.
+function joinRuns(gd, steps, xpNow, target) {
+  const out = [];
+  for (const st of steps) {
+    const same = out.find((x) => x.method.key === st.method.key);
+    if (!same) {
+      out.push(st);
+      continue;
+    }
+    same.actions += st.actions;
+    same.hours += st.hours;
+    same.xp += st.xp;
+    same.limitedBy = st.limitedBy ?? null;
+    for (const g of st.gather) {
+      const have = same.gather.find((x) => x.item === g.item);
+      if (!have) {
+        same.gather.push(g);
+        continue;
+      }
+      for (const k of ['qty', 'hours', 'actions', 'runHours']) have[k] = (have[k] ?? 0) + (g[k] ?? 0);
+      for (const n of g.needs) {
+        const sub = have.needs.find((x) => x.item === n.item);
+        if (sub) for (const k of ['qty', 'hours', 'actions']) sub[k] = (sub[k] ?? 0) + (n[k] ?? 0);
+        else have.needs.push({ ...n });
+      }
+    }
+  }
+  if (out.length === steps.length) return steps;
+  let xp = xpNow;
+  for (const st of out) {
+    st.fromLevel = gd.xp.levelForXp(xp, gd.levelCap);
+    xp += st.xp;
+    st.toLevel = Math.min(target, gd.xp.levelForXp(xp, gd.levelCap));
+  }
+  return out;
 }
 
 export function trainNext(gd, levels, xpBySkill = {}, { bank = null, current = null } = {}) {

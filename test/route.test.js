@@ -224,8 +224,8 @@ test('a goal never lists the same thing twice: its own step for an item does mor
   const fish = obtainEach(producerIndex(gd, levels), new Map(), [{ item: RAW, qty: 50 }])[0];
   const train = { kind: 'train', method: cook, actions: 100, hours: 100 / r.cyclesPerHour, xpGain: 100 * xpEach, xpAfter: xp.Cooking + 100 * xpEach, toLevel: 30, levelUps: [] };
   // Planned with 50 in the bank: catch 50 more, to have 100.
-  const gather = { kind: 'gather', method: fish.method, item: RAW, actions: fish.actions, hours: fish.runHours, qty: 50, target: 100, xpGain: 0, xpAfter: 0, levelUps: [] };
-  const run = (bank) => routeProgress(gd, lockRoute({ legs: [{ kind: 'unlock', skill: 'Cooking', from: 30, to: 31, unlocks: [], steps: [train, gather] }] }), { levels, xp, bank, current: cook.key }).legs[0].steps;
+  const gather = (method = fish.method) => ({ kind: 'gather', method, item: RAW, actions: fish.actions, hours: fish.runHours, qty: 50, target: 100, xpGain: 0, xpAfter: 0, levelUps: [] });
+  const run = (bank, method) => routeProgress(gd, lockRoute({ legs: [{ kind: 'unlock', skill: 'Cooking', from: 30, to: 31, unlocks: [], steps: [train, gather(method)] }] }), { levels, xp, bank, current: cook.key }).legs[0].steps;
   // The 50 you'll catch and the 50 you have cover it: no extra. (Counted in the order the plan has them,
   // the cooking would have looked short and got a catching step of its own.)
   const enough = run({ [RAW]: 50 });
@@ -238,6 +238,41 @@ test('a goal never lists the same thing twice: its own step for an item does mor
   assert.ok(one.left.qty >= 100 - 1e-6, `catches ${one.left.qty}`);
   close(one.extra, one.left.qty - 50);
   assert.ok(!steps.some((st) => st.topUp));
+  // Planned at a slower spot than the quickest one now: the extra still goes on that step, caught there.
+  const calm = gd.methodByKey.get('Fishing/CalmShallows');
+  assert.notEqual(calm.key, fish.method.key);
+  const slow = run({}, calm);
+  assert.deepEqual(slow.filter((st) => st.item === RAW).map((st) => st.method.key), [calm.key]);
+  assert.ok(slow.find((st) => st.item === RAW).extra > 0);
+});
+
+test('a plan does each training method in one run, not split around a detour', () => {
+  // 20 of everything: a few of something better while it lasts, then the main method. Before, Maple Bows
+  // came in two runs with Adamant Crossbows between them.
+  const bank = Object.fromEntries(Object.keys(gd.items).map((id) => [id, 20]));
+  const levels = { ...at(70), Fletching: 55 };
+  const xp = { ...Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(70)])), Fletching: gd.xp.xpForLevel(55) };
+  const plan = planTraining(gd, 'Fletching', levels, xp.Fletching, 59, { bank });
+  const keys = plan.steps.map((st) => st.method.key);
+  assert.ok(keys.includes('Fletching/MapleBow'));
+  assert.equal(new Set(keys).size, keys.length, keys.join(' > '));
+  // Levels follow the new order, and every method still comes after the level it needs.
+  let level = 55;
+  for (const st of plan.steps) {
+    assert.equal(st.fromLevel, level);
+    assert.ok(st.method.level <= st.fromLevel, `${st.method.key} needs ${st.method.level}`);
+    assert.ok(st.toLevel >= st.fromLevel);
+    level = st.toLevel;
+  }
+  assert.equal(level, 59);
+  // The same in a whole route, where goals in one skill join into one leg.
+  const route = planRoute(gd, { levels, xp, bank });
+  for (const leg of route.legs) {
+    const runs = leg.steps.filter((st) => st.kind === 'train').map((st) => st.method.key);
+    assert.equal(new Set(runs).size, runs.length, `${leg.skill}: ${runs.join(' > ')}`);
+    const last = leg.steps.filter((st) => st.kind === 'train').at(-1);
+    if (leg.kind === 'unlock' && last) assert.equal(last.toLevel, leg.to);
+  }
 });
 
 test('materials for one recipe share the bank: two that need the same item can not both count on it', () => {

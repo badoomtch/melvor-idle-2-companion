@@ -193,9 +193,13 @@ function settle(gd, legs, start) {
         st.target = stock.get(st.item) ?? 0;
       }
     }
+    const was = gd.levelOf(levels, skill);
     xp[skill] = (xp[skill] ?? 0) + st.xpGain;
-    levels[skill] = Math.max(gd.levelOf(levels, skill), Math.min(gd.levelCap, gd.xp.levelForXp(xp[skill], gd.levelCap)));
+    levels[skill] = Math.max(was, Math.min(gd.levelCap, gd.xp.levelForXp(xp[skill], gd.levelCap)));
     st.xpAfter = xp[skill];
+    // Levels as the steps now fall, after joining runs and stocking up first.
+    st.levelUps = levels[skill] > was ? [{ skill, level: levels[skill] }] : [];
+    if (st.kind === 'train') st.toLevel = levels[skill];
   }
 }
 
@@ -213,15 +217,17 @@ function itemsOf(gd, method) {
 // get them) for the whole route once, in the first goal that needs them. Things made from other things
 // stay with their own goal, next to what they're made from. Each goal then stocks up before it trains, a
 // skill at a time (all the mining, then all the smelting), starting with the step you're on in the game if
-// it's one of them. Training keeps its order.
+// it's one of them. Training keeps its order, one run per method in a goal: coming back to a method after
+// a detour (goals in one skill can do that between them) joins its first run, and the detour follows it.
 function batch(gd, legs, current) {
   const first = new Map();
   legs.forEach((leg, li) => {
     const kept = [];
     for (const st of leg.steps) {
-      const key = st.kind === 'train' ? null : `${st.method.key}|${st.item}`;
-      const into = key && first.get(key);
-      if (into && (into.leg === li || itemsOf(gd, st.method).uses.size === 0)) fold(into.step, st);
+      const train = st.kind === 'train';
+      const key = train ? `train|${st.method.key}` : `${st.method.key}|${st.item}`;
+      const into = first.get(key);
+      if (into && (into.leg === li || (!train && itemsOf(gd, st.method).uses.size === 0))) fold(into.step, st);
       else {
         if (key) first.set(key, { step: st, leg: li });
         kept.push(st);

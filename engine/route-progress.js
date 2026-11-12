@@ -178,13 +178,15 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
             // what the steps after it still use, less what they make.
             const ahead = order.slice(k + 1).filter((x) => !x.done).reduce((sum, x) => sum + ((x.uses.get(item) ?? 0) - (x.makes.get(item) ?? 0)) * x.left.actions, 0);
             const qty = st.short.need - st.short.have + Math.max(0, Math.ceil(ahead - 1e-9));
-            const top = topUp(gd, index, stock, item, qty, st.id);
+            // The goal's own step for the item, already counted above, makes the extra the same way.
+            const own = leg.steps.find((x) => seen.has(x) && !x.done && !x.topUp && x.item === item && x.kind !== 'train' && x.kind !== 'task');
+            const top = topUp(gd, index, stock, item, qty, st.id, own?.method.key);
             if (top) {
               st.short.topUp = true;
               const extra = [];
               for (const part of top.steps) {
                 // The same thing already lined up in this goal (and counted above): it does more instead.
-                const twin = leg.steps.find((x) => seen.has(x) && !x.done && !x.topUp && x.kind === part.kind && x.method.key === part.method.key && x.item === part.item);
+                const twin = leg.steps.find((x) => seen.has(x) && !x.done && !x.topUp && x.method.key === part.method.key && x.item === part.item);
                 if (twin) {
                   twin.left = { actions: twin.left.actions + part.actions, qty: (twin.left.qty ?? 0) + part.qty, hours: twin.left.hours + part.hours };
                   twin.extra = (twin.extra ?? 0) + part.qty;
@@ -242,11 +244,13 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
 
 // Steps that make up a shortfall of `qty` with what you can do now, deepest materials first (obtain()),
 // from `stock` as the plan will have it then, not counting what's left of the item itself (the step
-// short of it already counts on that). Null when nothing you can do makes it.
-function topUp(gd, index, stock, item, qty, forStep) {
+// short of it already counts on that). `way`: the method to make the item itself with (the one the goal
+// already uses for it), when you can do it now. Null when nothing you can do makes it.
+function topUp(gd, index, stock, item, qty, forStep, way = null) {
   const pool = new Map(Object.entries(stock).map(([k, v]) => [k, Math.max(0, v)]));
   pool.set(item, 0);
-  const got = obtain(index, pool, item, qty);
+  const only = way && (index.get(item) ?? []).filter((p) => p.rates.method.key === way);
+  const got = obtain(only?.length ? new Map([...index, [item, only]]) : index, pool, item, qty);
   if (!got.method || !Number.isFinite(got.hours)) return null;
   const parts = [...got.needs, { item, qty: got.short, method: got.method, makes: got.makes, actions: got.actions, hours: got.runHours }];
   if (parts.some((p) => !p.method || !p.actions)) return null;

@@ -1,6 +1,6 @@
 {
   "name": "melvor-idle-2-companion",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Standalone companion for Melvor Idle 2: reads your save and tells you the most efficient things to do. No account or internet needed.",
   "license": "MIT",
   "type": "module",

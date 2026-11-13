@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.4
+
+### Changed
+
+- **Updated for Melvor Idle 2 0.11.5 (alpha.2).**
+  - **Saves from 0.11.5 read again.** The game no longer saves levels, only XP, and each quest task has a new flag. With a 0.11.5 save the companion read no skills, quests, Agility techniques or hunting journal. It now works out each level from XP the way the game does: skills up to 120, Agility techniques up to their cap, journal entries up to 25. The formulas give the same levels older saves stored, and they add up to the total level the game saves.
+  - **Rune Packs** no longer need Runecrafting 70 or 95, only their Mastery Guild rank.
+  - **Agility Marks:** courses drop them at new rates. The Arena's charms and technique cheat sheets now cost Agility Marks in place of Arena Reward Tokens, and the charms no longer need a technique level.
+  - **Silted Oasis and Sea Cliffside** open once their quest is finished, not after its first step. The quests' fights moved to areas of their own, which plans leave out. Moonscarred Crater also needs the Silver Slayer Permit now.
+  - **Farming:** Compost gives +40% crops (was +20%), Super Compost +45% (was +40%).
+  - **Gear:** 60 pieces need lower levels, for example upgraded Mithril armour needs Defence 40 (was 43). The Ceedyr Cape's bonus now applies on a Slayer task, not in Slayer areas.
+  - **Drops:** burning Blessed Logs can give Blessed Fragments, Quiet Bend can give Rope, the Stone Mason gives more Clay, and Yellowtail Birds have a second rare species, the Dreamtail.
+  - **Prices:** jewellery, staves and wands sell for more, Feathers for less (1 GP, was 4). The Arena Entry Ticket costs 750 GP (was 1,000).
+  - **Shop:** four new combat utility items (Thorned Buckle, Sentinel Charm, Icy Strand, Mending Flesh, 25,000 GP each), plus basic arrows, javelins, boomerangs and Topaz Bolts.
+  - **Toolbelt:** Fireflies in a Jar (Farming) is used once per harvest, and Warped Cacti Water once per kill.
+  - The Stone Spear Head is gone, and new icons replace missing artwork.
+
 ## 0.4.3
 
 ### Fixed

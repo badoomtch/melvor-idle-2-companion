@@ -256,6 +256,41 @@ test('reads Agility technique levels', () => {
   assert.deepEqual(save.agilityTechniques, { Climbing: { xp: 941, level: 5 }, Jumping: { xp: 0, level: 1 } });
 });
 
+test('0.11.5 saves keep only XP: levels come from each experience table, and quest tasks have a new flag', () => {
+  // Skills, Agility techniques and journal entries write just their XP (BaseExperience); a quest task
+  // writes whether its condition goals are confirmed before its state, and the quest list is followed by
+  // the quest page's settings.
+  const agility = ['MelvorBase:Agility', [
+    ['Techniques', (c) => {
+      c.i32(3);
+      c.str('MelvorBase:Climbing').region((g) => g.f64(941));
+      c.str('MelvorBase:Jumping').region((g) => g.f64(0));
+      c.str('MelvorBase:Evading').region((g) => g.f64(1e9));
+    }],
+  ]];
+  const journal = (c) => {
+    c.i32(2);
+    c.str('MelvorBase:WildChicken').region((e) => e.bool(true).f64(183).bool(false).f64(0).f64(0));
+    c.str('MelvorBase:Griffin').region((e) => e.bool(true).f64(1e9).bool(false).f64(0).f64(0));
+    c.i32(0).i32(0);
+  };
+  const task = (c) => c.i32(1).str('Goal1').region((g) => g.f64(3).bool(true).bool(true)).bool(true).bool(true).bool(true).i32(2);
+  const quests = (c) => {
+    c.i32(1);
+    c.str('MelvorBase:MQ10').region((q) => q.i32(1).i32(1).str('Step1').region((s) => s.i32(1).str('Task1').region(task).bool(true).i32(1)));
+    c.bool(true).bool(false).bool(false).i32(0); // the quest page's filters, no quest selected, no custom NPCs
+  };
+  const save = parseSave(buildSave({ version: 29, skills: { Attack: lvl(42, 10), Woodcutting: lvl(120, 5e9) }, extraEntities: [agility, ['MelvorBase:Hunting', [['Journal', journal]]], ['MelvorBase:Quests', [['Quests', quests]]]] }), { levelCap: 120, techniqueCaps: { Evading: 40 } });
+  assert.deepEqual(save.warnings, []);
+  assert.equal(save.newerThanSupported, false);
+  assert.deepEqual([save.skills.Attack.level, save.skills.Woodcutting.level], [42, 120], 'levels from XP, up to the cap');
+  assert.ok(save.skills.Attack.verified);
+  // The same levels 0.11.4 saves stored (941 XP was technique level 5, 183 journal XP level 6).
+  assert.deepEqual(save.agilityTechniques, { Climbing: { xp: 941, level: 5 }, Jumping: { xp: 0, level: 1 }, Evading: { xp: 1e9, level: 40 } });
+  assert.deepEqual(save.huntingJournal, { WildChicken: { level: 6, xp: 183 }, Griffin: { level: 25, xp: 1e9 } });
+  assert.deepEqual(save.quests.MQ10.steps.Step1.tasks.Task1, { goals: { Goal1: { progress: 3, complete: true, active: true } }, visible: true, costsMet: true, state: 'complete' });
+});
+
 test('reads each Hunting animal journal level', () => {
   const entry = (discovered, xp, level) => (c) => c.bool(discovered).f64(xp).i32(level).bool(false).f64(0).f64(0);
   const journal = (c) => {

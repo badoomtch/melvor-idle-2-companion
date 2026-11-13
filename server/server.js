@@ -76,6 +76,8 @@ function buildId() {
 const build = buildId();
 const mechanics = data.meta.mechanics;
 const xpTable = createXpTable(mechanics.xpTable);
+// Each Agility technique's level cap, for saves that keep only XP (0.11.5 on).
+const techniqueCaps = Object.fromEntries((data.agilityTechniques ?? []).map((t) => [t.id, t.cap]));
 let saveDirs = resolveSaveDirs(args.saves);
 const historyStore = createHistoryStore(HISTORY_DIR);
 const observations = createObservationStore(HISTORY_DIR);
@@ -152,7 +154,7 @@ function refresh() {
     const previousError = entry.error;
     const before = entry.parsed;
     try {
-      const parsed = readSaveFile(f.file, { levelCap: mechanics.levelCap, xpTable });
+      const parsed = readSaveFile(f.file, { levelCap: mechanics.levelCap, xpTable, techniqueCaps });
       entry.parsed = parsed;
       entry.error = null;
       entry.mtimeMs = f.mtimeMs;

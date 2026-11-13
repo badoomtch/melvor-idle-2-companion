@@ -17,7 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const outIndex = args.indexOf('--out');
 const outPath = resolve(outIndex >= 0 ? args[outIndex + 1] : join(ROOT, 'reports', 'build-diff.md'));
-const files = args.filter((a, i) => !a.startsWith('--') && i !== outIndex + 1);
+const files = args.filter((a, i) => !a.startsWith('--') && !(outIndex >= 0 && i === outIndex + 1));
 if (!files.length) {
   console.error('Usage: node tools/compare-builds.js <old companion-data.json> [new companion-data.json] [--out file]');
   process.exit(1);

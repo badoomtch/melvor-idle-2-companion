@@ -13,11 +13,29 @@ import { brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import { defaultXpTable } from '../engine/xp.js';
 
 // SaveVersion enum values used by the fields we read. LatestVerified is the newest version checked
-// against a real save (the Steam playtest build of 30 Oct 2026 writes 28: every region read to its
-// last byte, every skill's level matching its XP and every bank item known).
-export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_8_3: 15, Alpha0_9_0: 16, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, LatestVerified: 28 };
+// against a real save. The Steam playtest build 0.11.5 alpha.2 (13 Nov 2026) writes 29: no warnings,
+// every region read to its last byte, every bank item known, and the levels worked out from XP add up
+// to the header's total level. Its journal and technique formulas also give the levels 0.11.4 saves
+// stored.
+export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_8_3: 15, Alpha0_9_0: 16, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, Alpha0_11_5: 29, LatestVerified: 29 };
 
 export class SaveFormatError extends Error {}
+
+// From 0.11.5 a save keeps only XP, not levels (BaseExperience.ReadFrom), so levels come from each
+// experience table: skills use the standard one passed to parseSave(), Agility techniques and Hunting
+// journal entries have their own (AgilityTechniqueExperienceTable, HuntingAnimalExperienceTable).
+const levelFrom = (xpFor) => (xp) => {
+  if (!(xp > 0)) return 1;
+  let level = 1;
+  while (level < 1000 && xpFor(level + 1) <= xp) level++;
+  return level;
+};
+const TECHNIQUE_STEP = 2 ** (1260 / 4095);
+export const techniqueLevel = levelFrom((L) => (L < 1 ? 0 : Math.floor((1 / 6) * (L ** 2 - L + 600 * ((2 ** (L / 3.25) - TECHNIQUE_STEP) / (TECHNIQUE_STEP - 1))))));
+const JOURNAL_STEP = 2 ** (1 / 7);
+export const journalLevel = levelFrom((L) => (L <= 1 ? 0 : Math.floor((1 / 12) * (L ** 2 - L + 100 * ((2 ** (L / 3.5) - JOURNAL_STEP) / (JOURNAL_STEP - 1))))));
+// HuntingAnimalJournalEntry: every animal in the journal levels to 25.
+const JOURNAL_LEVEL_CAP = 25;
 
 class Reader {
   constructor(buf) {
@@ -128,15 +146,16 @@ function readComponents(region) {
   return components;
 }
 
-// BaseExperience.WriteTo: double xp, [int32 legacy field before Alpha0_11_1], int32 level.
+// BaseExperience.WriteTo: double xp, [int32 legacy field before Alpha0_11_1], [int32 level before
+// Alpha0_11_5]. From 0.11.5 there's no level: `level` is null and the caller works it out from the XP.
 function readExperience(region, version) {
   const r = region;
-  const expected = version < SaveVersion.Alpha0_11_1 ? 16 : 12;
+  const expected = version < SaveVersion.Alpha0_11_1 ? 16 : version < SaveVersion.Alpha0_11_5 ? 12 : 8;
   if (r.buf.length !== expected) throw new SaveFormatError(`Experience block is ${r.buf.length} bytes, expected ${expected}`);
   const xp = r.f64();
   if (version < SaveVersion.Alpha0_11_1) r.i32();
-  const level = r.i32();
-  if (!Number.isFinite(xp) || xp < 0 || level < 1 || level > 1000) throw new SaveFormatError(`Implausible experience values (xp ${xp}, level ${level})`);
+  const level = version < SaveVersion.Alpha0_11_5 ? r.i32() : null;
+  if (!Number.isFinite(xp) || xp < 0 || (level != null && (level < 1 || level > 1000))) throw new SaveFormatError(`Implausible experience values (xp ${xp}, level ${level})`);
   return { xp, level };
 }
 
@@ -323,10 +342,12 @@ function readMasteryGuild(region) {
 // QuestsComponent: each quest's state and, nested, each step's, task's and goal's progress:
 //   i32 n, per quest: str id, region{ i32 state, i32 n, per step: str id, region{ i32 n, per task: str id,
 //   region{ i32 n, per goal: str id, region{ f64 progress, bool complete, bool active }, bool visible,
-//   bool costsMet, i32 state }, bool visible, i32 state } }
+//   bool costsMet, [bool conditionGoalsConfirmed from 0.11.5], i32 state }, bool visible, i32 state } }.
+// From 0.11.5 the list is followed by the quest page's filters, its selected quest and custom NPCs,
+// which aren't read.
 const QUEST_STATES = ['unstarted', 'inProgress', 'completed', 'claimed'];
 const STEP_STATES = ['inactive', 'active', 'complete'];
-function readQuests(region) {
+function readQuests(region, version) {
   const each = (r, what, read) => {
     const out = {};
     for (let i = 0, n = r.count(1000, what); i < n; i++) {
@@ -338,7 +359,12 @@ function readQuests(region) {
     return out;
   };
   const goal = (g) => ({ progress: g.f64(), complete: g.bool(), active: g.bool() });
-  const task = (g) => ({ goals: each(g, 'quest goal', goal), visible: g.bool(), costsMet: g.bool(), state: STEP_STATES[g.i32()] ?? 'inactive' });
+  const task = (g) => {
+    const out = { goals: each(g, 'quest goal', goal), visible: g.bool(), costsMet: g.bool() };
+    if (version >= SaveVersion.Alpha0_11_5) g.bool(); // its condition goals confirmed
+    out.state = STEP_STATES[g.i32()] ?? 'inactive';
+    return out;
+  };
   const step = (g) => ({ tasks: each(g, 'quest task', task), visible: g.bool(), state: STEP_STATES[g.i32()] ?? 'inactive' });
   const quest = (g) => ({ state: QUEST_STATES[g.i32()] ?? 'unstarted', steps: each(g, 'quest step', step) });
   return each(region, 'quest', quest);
@@ -444,7 +470,7 @@ function readHuntingJournal(region, version) {
     const discovered = e.bool();
     const xp = e.f64();
     if (version < SaveVersion.Alpha0_11_1) e.i32();
-    const level = e.i32();
+    const level = version < SaveVersion.Alpha0_11_5 ? e.i32() : Math.min(journalLevel(xp), JOURNAL_LEVEL_CAP);
     if (!Number.isFinite(xp) || xp < 0 || level < 1 || level > 1000) throw new SaveFormatError(`Implausible journal entry for ${id}`);
     // Every animal starts discovered; an undiscovered one tracks 4 times its most steps (ActiveHuntingAnimal).
     out[id] = discovered ? { level, xp } : { level, xp, discovered: false };
@@ -490,13 +516,15 @@ function readHuntingAction(region, version) {
 }
 
 // AgilityTechniquesComponent: each technique's id, then its experience block (as for a skill).
-function readTechniques(region, version) {
+// From 0.11.5 the level comes from the XP, up to the technique's cap (`caps`: { id: cap } from the
+// game data; without it, uncapped).
+function readTechniques(region, version, caps = null) {
   const r = region;
   const out = {};
   for (let i = 0, n = r.count(100, 'technique'); i < n; i++) {
     const id = localId(r.str());
     const { xp, level } = readExperience(r.region(), version);
-    out[id] = { xp, level };
+    out[id] = { xp, level: level ?? Math.min(techniqueLevel(xp), caps?.[id] ?? Infinity) };
   }
   return out;
 }
@@ -807,9 +835,10 @@ function readCombat(components, version) {
 /**
  * Parses a save buffer (the raw .sav file contents).
  * @param {Buffer} fileBuffer
- * @param {{ levelCap?: number, xpTable?: ReturnType<import('../engine/xp.js').createXpTable>, headerOnly?: boolean }} [options]
+ * @param {{ levelCap?: number, xpTable?: ReturnType<import('../engine/xp.js').createXpTable>, techniqueCaps?: Record<string, number>, headerOnly?: boolean }} [options]
+ *   techniqueCaps: each Agility technique's level cap ({ Climbing: 40 }), for saves that keep only XP
  */
-export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable, headerOnly = false } = {}) {
+export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable, techniqueCaps = null, headerOnly = false } = {}) {
   // The game's saves end without Brotli's end-of-stream marker (its .NET reader just reads until
   // the data runs out), so decode in flush mode instead of requiring a finished stream.
   let data;
@@ -843,9 +872,11 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
     const exp = components.get('Experience');
     if (exp) {
       try {
-        const { xp, level } = readExperience(exp, version);
-        // The cap differs between game builds, so accept the level the XP gives with or without it.
+        const { xp, level: saved } = readExperience(exp, version);
+        // The cap differs between game builds, so accept the level the XP gives with or without it. From
+        // 0.11.5 there's no saved level: it's the XP's, up to the cap.
         const uncapped = xpTable.levelForXp(xp);
+        const level = saved ?? Math.min(uncapped, levelCap);
         const verified = level === uncapped || level === Math.min(uncapped, levelCap);
         result.skills[id] = { xp, level, verified };
         if (!verified) result.warnings.push(`${id}: saved level ${level} does not match ${Math.round(xp)} XP (expected ${uncapped})`);
@@ -887,14 +918,14 @@ export function parseSave(fileBuffer, { levelCap = 60, xpTable = defaultXpTable,
     }
     if (id === 'Quests' && components.has('Quests')) {
       try {
-        result.quests = readQuests(components.get('Quests'));
+        result.quests = readQuests(components.get('Quests'), version);
       } catch (e) {
         result.warnings.push(`Quests: ${e.message}`);
       }
     }
     if (id === 'Agility' && components.has('Techniques')) {
       try {
-        result.agilityTechniques = readTechniques(components.get('Techniques'), version);
+        result.agilityTechniques = readTechniques(components.get('Techniques'), version, techniqueCaps);
       } catch (e) {
         result.warnings.push(`Agility techniques: ${e.message}`);
       }

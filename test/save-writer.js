@@ -117,7 +117,8 @@ export function buildSave({
         ['Experience', (c) => {
           c.f64(s.xp);
           if (version < 25) c.i32(0);
-          c.i32(s.level);
+          // From 0.11.5 (29) only the XP is saved.
+          if (version < 29) c.i32(s.level);
         }],
         ['Statistics', (c) => c.i32(2).str('noise').f64(3.5)],
       ],

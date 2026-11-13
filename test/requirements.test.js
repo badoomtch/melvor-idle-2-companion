@@ -95,7 +95,13 @@ test('requirements the save records are answered from it, with specific labels',
     gd.player.techniques.Balancing = 24;
     assert.deepEqual(check(sea.requires).missing.map((r) => r.type), ['technique']);
 
-    assert.ok(check(gd.areaById.get('SiltedOasis').requires).ok, 'quest step finished');
+    // Since 0.11.5 Silted Oasis opens once The Path to Melvor is done, not after its first step (the
+    // quest's fights moved to an area of their own).
+    const oasis = gd.areaById.get('SiltedOasis').requires;
+    assert.deepEqual(check(oasis).missing.map((r) => r.type), ['quest'], 'one step done is not enough');
+    save.quests.MQ10.state = 'claimed';
+    gd.player = playerState(save);
+    assert.ok(check(oasis).ok, 'quest finished');
     assert.ok(check(gd.raw.combat.dungeons.find((d) => d.id === 'VenomPit').requires).ok, '5 Fells tasks');
     // An item never found counts as 0; a statistic the save didn't read stays unknown.
     const map = method('Agility/ToragGroundsTrailAdvancedPath').requires.filter((r) => r.stat === 'BankItemFound');

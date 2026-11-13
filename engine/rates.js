@@ -468,8 +468,8 @@ const primaryProducts = (method) => new Set([method.product?.item, ...(method.pr
 // Toolbelt items used up as you work (potions, Blackstone): one each time what uses them happens, per
 // hit, catch, craft step and so on (ToolbeltCapability.ConsumesOn), less any toolbelt preservation for
 // that item (the Burning Embers Gloves keep Blackstone). Tools a method needs are counted with it.
-const TOOL_USED_PER = { WoodcuttingDamageTree: 'hit', MiningMineRock: 'hit', FishingFishRecipe: 'catch', ArtisanPerformStep: 'step', AgilityObstacleAttempted: 'obstacle', FarmingRecipeGrown: 'harvest' };
-const NOT_SKILLING = new Set(['CharacterTurnEnded', 'CharacterAttacked', 'CharacterFightStarted', 'EnemySpawned', 'FoodEaten', 'RanchingAnimalFed']);
+const TOOL_USED_PER = { WoodcuttingDamageTree: 'hit', MiningMineRock: 'hit', FishingFishRecipe: 'catch', ArtisanPerformStep: 'step', AgilityObstacleAttempted: 'obstacle', FarmingRecipeGrown: 'harvest', FarmingRecipeHarvested: 'harvest' };
+const NOT_SKILLING = new Set(['CharacterTurnEnded', 'CharacterAttacked', 'CharacterFightStarted', 'EnemySpawned', 'EnemyKilled', 'CompleteDungeon', 'FoodEaten', 'RanchingAnimalFed']);
 function toolUse(gd, method, c, acc, effects) {
   const out = [];
   const required = new Set(gd.usedTools(method).map((t) => t.item));

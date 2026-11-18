@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.5
+
+### Changed
+
+- **Updated for Melvor Idle 2 0.11.6 (alpha.1).**
+  - **Skills now cap at 99**, down from 120. Plans, training paths and levels read from your save stop at 99, and the content that was above it moved down: Bountiful Corals, Sunlit Stretch and Deep Blue are Fishing 95, 96 and 98 (were 100, 105 and 110), and the Giant Eel, Manta Ray and Whale cook at 95, 97 and 98.
+  - **Top-end Fishing and Cooking rebalanced.** Those three fishing spots give about half the XP, and Deep Blue now gives mostly Manta Rays (9 in 10, was 1 in 5). Cooking them gives far more XP (a Whale 700, was 42) and is easier, and a cooked Whale heals 2,010 (was 115).
+  - **Saves from 0.11.6 are checked:** they read with no warnings and every level matches the game's total.
+  - **Gear:** about 150 pieces gained defence bonuses for the Offensive and Defensive stances. Upgraded and corrupted armour changed: corrupted Mithril needs Defence 40 (was 43) with bigger attack penalties, and the upgraded Rune Helmet needs Defence 60 (was 50).
+  - **Toolbelt:** Spikemoss Leaf, Geode Dust and Seaweed are used up 1 time in 10 instead of every time, and Spikemoss Leaf's Herblore preservation is 2% (was 4%).
+  - **Smaller changes:** Meteorite Runegrafters are made 24 at a time (was 12), the Fireflies event while burning logs gives 2 (was 1), technique cheat sheets sell for 1 GP, and new icons.
+
 ## 0.4.4
 
 ### Changed

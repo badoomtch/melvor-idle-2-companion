@@ -1,3 +1,5 @@
+<img src="ui/brand/logo.svg" width="96" align="right" alt="">
+
 # Melvor Idle 2 Companion
 
 A free helper that runs alongside Melvor Idle 2. It reads your save every time the game autosaves and tells you the best thing to do next: what to train, what to make, what to fight, what to put on and what to sell.

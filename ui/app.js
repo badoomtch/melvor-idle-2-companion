@@ -922,13 +922,6 @@ async function loadIcons() {
     // no bundled icons
   }
   configureIcons(manifest, gd.skills);
-  if (manifest.logo) {
-    const url = `/ui/${manifest.logo}`;
-    const mark = document.getElementById('brand-mark');
-    mark.classList.add('logo');
-    mark.innerHTML = `<img src="${esc(url)}" alt="">`;
-    document.getElementById('favicon').href = url;
-  }
 }
 
 async function init() {

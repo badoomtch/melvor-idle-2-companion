@@ -4,12 +4,17 @@
 
 ### Changed
 
+- **The companion has its own logo** in the top bar and the browser tab: a gold take on the game's castle M, with red swords, in place of the game's own logo.
 - **Settings is split into four tabs instead of one long page.**
   - **General:** your levels, where saves are read from, and appearance.
   - **Alerts:** what to tell you about, grouped into warnings, progress and sound, then how you get them (pop-ups and desktop notifications).
   - **Bonuses:** the switch and what's counted, in columns.
   - **About:** version and update checks, how the numbers work, and the stats file.
 - **Bonuses are easier to read.** Each skill shows its general bonuses first. Bonuses for one animal, area or recipe fold away under "For Wild Chicken, Wild Cow, Greentail Bird and 4 more", and use the game's names. Hunting used to list "WildChicken" and the like, about 25 lines of them.
+
+### Fixed
+
+- **Your plan knows which step you're on, in any goal.** It only looked for what you're doing in the first goal that wasn't done. Smelting the Adamantite Bars your Fletching goal needs left "Do this now" on goal 1's Agility. Now that step is the one "You're on", with its goal marked. A step you've just finished that the game keeps running doesn't count: the plan still moves on to what's next.
 
 ## 0.4.6
 

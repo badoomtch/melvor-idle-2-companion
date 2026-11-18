@@ -13,7 +13,7 @@ import { findGameFile, openGamePack, readImage } from './game-pack.js';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ICON_DIR = join(ROOT, 'ui', 'icons');
 const MANIFEST = join(ROOT, 'data', 'icons.json');
-const LOGO = 'res://Assets/Logo_V3.svg';
+// The companion's own logo is ui/brand/logo.svg (kept outside ui/icons/, which this clears).
 
 const gameFile = process.argv[2] ?? findGameFile();
 if (!gameFile || !existsSync(gameFile)) {
@@ -76,11 +76,6 @@ for (const [group, paths] of Object.entries(groups)) {
     report[group].files++;
     report[group].bytes += img.data.length;
   }
-}
-const logo = pack.readFile(LOGO);
-if (logo) {
-  writeFileSync(join(ICON_DIR, 'logo.svg'), logo);
-  manifest.logo = 'icons/logo.svg';
 }
 pack.close();
 writeFileSync(MANIFEST, JSON.stringify(manifest));

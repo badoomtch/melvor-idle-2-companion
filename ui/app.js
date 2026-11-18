@@ -51,7 +51,7 @@ const state = {
   // The plan on What next: the companion keeps it and moves it on with each autosave (server/route-watcher.js).
   plan: null,
   serverAlerts: null,
-  route: { tab: 'overview', args: [] },
+  route: { tab: 'home', args: [] },
   live: { connected: false, pulse: false },
   ui: {
     expanded: new Set(),
@@ -88,9 +88,16 @@ const clampLevel = (n) => Math.min(Math.max(Math.round(Number(n) || 1), 1), gd.l
 async function loadServerAlerts() {
   try {
     state.serverAlerts = await fetchJson('/api/alerts');
-    if (state.serverAlerts.enabled) await syncServerAlerts();
+    // Plans use your goals and bonus setting too, so the companion gets them whenever its copy differs
+    // (another companion folder, or a goal added while it wasn't running), notifications on or not.
+    const goalsKey = (list) => JSON.stringify((list ?? []).map((g) => `${g.skill}|${g.target}`).sort());
+    const goalsDiffer = goalsKey(state.serverAlerts.goals) !== goalsKey(state.goals);
+    const differs = goalsDiffer || (state.serverAlerts.useBonuses !== false) !== (state.useBonuses !== false);
+    if (state.serverAlerts.enabled || differs) await syncServerAlerts();
+    return goalsDiffer;
   } catch {
     state.serverAlerts = null; // an older companion without them
+    return false;
   }
 }
 async function postJson(url, body) {
@@ -135,6 +142,8 @@ async function loadPlan() {
   try {
     const p = await fetchJson(`/api/route?id=${encodeURIComponent(state.saveId)}`);
     state.plan = p.plan ? { id: p.id, ...p.plan } : null;
+    // A new one being made in the background (it says when it's ready).
+    state.planMaking = !!p.making;
   } catch {
     // keep what we had
   }
@@ -282,7 +291,7 @@ function viewContext() {
 
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
-  const tab = parts[0] === 'mini' || TABS.some(([id]) => id === parts[0]) ? parts[0] : 'overview';
+  const tab = parts[0] === 'mini' || TABS.some(([id]) => id === parts[0]) ? parts[0] : 'home';
   return { tab, args: parts.slice(1) };
 }
 
@@ -581,12 +590,15 @@ const ACTIONS = {
   // What next: a fresh plan when you'd rather not follow this one.
   async replan() {
     if (!state.save) return;
+    state.planMaking = true;
+    render();
     try {
       const p = await postJson('/api/route/replan', { id: state.save.id });
       state.plan = { id: p.id, ...p.plan };
     } catch (e) {
       toast("Couldn't make a new plan", e.message);
     }
+    state.planMaking = false;
     render();
   },
   theme(el) {
@@ -724,17 +736,20 @@ const ACTIONS = {
     for (const [skill, s] of Object.entries(state.save?.skills ?? {})) state.manualLevels[skill] = s.level;
     store.set('manualLevels', state.manualLevels);
   },
-  addGoal() {
+  // Your goals go first in your plan: the companion gets them, then makes a new plan with them.
+  async addGoal() {
     const skill = state.ui.goalSkill ?? gd.skills[0].id;
     const target = clampLevel(state.ui.goalTarget);
     state.goals = [...state.goals.filter((g) => !(g.skill === skill && g.target === target)), { id: Date.now().toString(36), skill, target }];
     store.set('goals', state.goals);
-    syncServerAlerts();
+    await syncServerAlerts();
+    if (state.serverAlerts) await ACTIONS.replan();
   },
-  removeGoal(el) {
+  async removeGoal(el) {
     state.goals = state.goals.filter((g) => g.id !== el.dataset.id);
     store.set('goals', state.goals);
-    syncServerAlerts();
+    await syncServerAlerts();
+    if (state.serverAlerts) await ACTIONS.replan();
   },
 };
 
@@ -945,6 +960,16 @@ async function init() {
 
   render();
   connectLive();
+  // Slow work a page asked for (later() in shared.js) has finished: draw it again, once per frame.
+  let redraw = false;
+  window.addEventListener('companion:rerender', () => {
+    if (redraw) return;
+    redraw = true;
+    requestAnimationFrame(() => {
+      redraw = false;
+      render();
+    });
+  });
   window.addEventListener('hashchange', () => {
     state.route = parseRoute();
     render();
@@ -957,7 +982,11 @@ async function init() {
   loadHistory().then(() => ['history', 'shop'].includes(state.route.tab) && render());
   loadObservations().then(() => state.route.tab === 'accuracy' && render());
   loadFinds().then((loaded) => loaded && render());
-  loadServerAlerts().then(render);
+  // Goals the companion didn't have: a new plan with them now, not at the next autosave.
+  loadServerAlerts().then((goalsResent) => {
+    render();
+    if (goalsResent && state.serverAlerts && state.save) ACTIONS.replan();
+  });
   tick();
   setInterval(tick, 1000);
 }

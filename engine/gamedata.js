@@ -140,15 +140,28 @@ export function describeRequirement(gd, r) {
 
 const saveLevels = (save) => Object.fromEntries(Object.entries(save?.skills ?? {}).map(([id, s]) => [id, s.level]));
 
+// Mastery Guild bonuses for a save's Mastery state and levels, worked out once: they're most of the cost
+// of playerBonuses(), which gets called again for every toolbelt tried (`{ ...save, toolbelts }` keeps
+// the same mastery object).
+const masteryMemo = new WeakMap();
+function masteryEffects(gd, save) {
+  const levels = saveLevels(save);
+  const key = JSON.stringify(levels);
+  const had = masteryMemo.get(save.mastery);
+  if (had?.gd === gd && had.key === key) return had.effects;
+  const effects = [];
+  for (const m of Object.values(masteryStatus(gd, save, levels))) {
+    for (const b of m.bonuses) for (const e of b.effects) effects.push({ ...e, source: `${b.rankName} (Mastery Guild)` });
+  }
+  masteryMemo.set(save.mastery, { gd, key, effects });
+  return effects;
+}
+
 // Skilling bonuses the save shows you have: shop upgrades you've bought, items in your toolbelts
 // (tools, potions, utilities), pets you've found and Mastery Guild ranks. Each keeps a `source` for display.
 export function playerBonuses(gd, save) {
   const effects = [];
-  if (save?.mastery) {
-    for (const m of Object.values(masteryStatus(gd, save, saveLevels(save)))) {
-      for (const b of m.bonuses) for (const e of b.effects) effects.push({ ...e, source: `${b.rankName} (Mastery Guild)` });
-    }
-  }
+  if (save?.mastery) effects.push(...masteryEffects(gd, save));
   for (const [id, count] of Object.entries(save?.shopPurchases ?? {})) {
     const p = gd.shopById.get(id);
     for (const e of p?.provides.effects ?? []) effects.push({ ...e, value: e.value * Math.max(1, count), source: p.name });

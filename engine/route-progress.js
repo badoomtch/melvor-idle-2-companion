@@ -5,6 +5,7 @@
 // needed them is done). Training done means the rest of that goal before it is done too. Once done, a
 // step stays done, even when a later step uses up what it made. Isomorphic.
 import { minEach, obtain, producerIndex } from './advisor.js';
+import { fightData, fightMethod } from './fight-method.js';
 import { computeRates } from './rates.js';
 
 // The route as plain data to keep between autosaves: methods by key.
@@ -19,6 +20,10 @@ export function lockRoute(route, { madeAt = Date.now(), speed = null } = {}) {
       id: leg.id ?? `${leg.skill}|${leg.to}`,
       label: leg.label ?? null,
       item: leg.item ?? null,
+      toolbelt: leg.toolbelt ?? null,
+      itemSource: leg.itemSource ?? null,
+      gp: leg.gp ?? null,
+      yours: !!leg.yours,
       reasons: (leg.reasons ?? []).map((r) => (typeof r === 'string' ? r : r.text)),
       skill: leg.skill,
       from: leg.from,
@@ -37,6 +42,8 @@ export function lockRoute(route, { madeAt = Date.now(), speed = null } = {}) {
         xpGain: st.xpGain,
         toLevel: st.toLevel ?? null,
         limitedBy: st.limitedBy ?? null,
+        // A fight: what it takes to make its method again after a restart.
+        fight: st.method.kind === 'fight' ? fightData(st.method) : null,
         lasts: Number.isFinite(st.lasts) ? st.lasts : null,
         levelUps: st.levelUps ?? [],
         task: st.task ?? null,
@@ -64,7 +71,7 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
   let broken = false;
   const legs = locked.legs.map((leg) => {
     const steps = leg.steps.map((saved) => {
-      const method = gd.methodByKey.get(saved.method);
+      const method = gd.methodByKey.get(saved.method) ?? (saved.fight ? fightMethod(gd, saved.fight) : null);
       if (!method) {
         broken = true;
         return null;
@@ -263,7 +270,7 @@ function topUp(gd, index, stock, item, qty, forStep, way = null) {
 }
 
 // What you do in each kind of skill, to start a step with: "Mine 37 Iron Ore", "Make Oak Boomerang × 931".
-export const STEP_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', firemaking: 'Burn', artisan: 'Make', thieving: 'Steal from', agility: 'Do', astrology: 'Study', hunting: 'Hunt', farming: 'Grow', ranching: 'Raise' };
+export const STEP_VERBS = { fight: 'Fight', woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', firemaking: 'Burn', artisan: 'Make', thieving: 'Steal from', agility: 'Do', astrology: 'Study', hunting: 'Hunt', farming: 'Grow', ranching: 'Raise' };
 export const GATHER_VERBS = { woodcutting: 'Cut', mining: 'Mine', fishing: 'Catch', cooking: 'Cook', artisan: 'Make', hunting: 'Hunt', farming: 'Grow' };
 
 // Where a training step stops. Most get you to a level ("until Runecrafting 45"); one the plan cut short

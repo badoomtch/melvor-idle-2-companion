@@ -4,13 +4,13 @@ A free helper that runs alongside Melvor Idle 2. It reads your save every time t
 
 It runs on your own computer as a small web page. There's no account, no sign-in and nothing to install.
 
-![What next: your plan, with the step you're on](docs/screenshots/next.png)
+![Home: your plan, with the step you're on](docs/screenshots/next.png)
 
 ## What it does for you
 
-**Gives you a plan.** What next lists your next goals in the order that pays off most: the next unlock in each skill, gear worth making, and Mastery Guild ranks. Each goal has concrete steps, such as "Mine 160 Iron Ore", then "Make 159 Steel Bar", then "Train until Crafting 47", with how long each takes. Steps tick off by themselves as you play. If you run short of something, a step to get more goes in, with the shop price when the shop sells it. When the plan is done, you get a new one. Each skill page also shows the quickest way to its next unlock.
+**Gives you a plan.** Home lists your next goals in the order that pays off most: the next unlock in each skill, gear and toolbelt items worth getting, combat levels that let you wear something better, and Mastery Guild ranks. Levels you set on the Goals page go first. Each goal has concrete steps, such as "Mine 160 Iron Ore", then "Make 159 Steel Bar", then "Train until Crafting 47", with how long each takes. Steps tick off by themselves as you play. If you run short of something, a step to get more goes in, with the shop price when the shop sells it. When the plan is done, you get a new one. Each skill page also shows the quickest way to its next unlock, and gear within reach: toolbelt items you could make or buy that would make that skill better.
 
-**Tells you when you could be doing better.** It grades what you're doing against everything you've unlocked ("Willow Tree gives 70% more XP"), and shows your real XP per hour measured from your saves.
+**Tells you when you could be doing better.** It grades what you're doing against everything you've unlocked that you can keep going, counting the time to get materials ("Willow Tree gives 70% more XP"), and shows your real XP per hour measured from your saves.
 
 **Uses what you already own.** Plans start from your bank. The Toolbelts page and your plan point out tools and potions sitting in your bank that would make something quicker ("Put on Balaclava instead of Fire Wizard Hat: 13% faster"). The Combat page picks the best gear you own for each style.
 
@@ -28,9 +28,9 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 
 **Keeps an eye on things.**
 - Anything that needs you sits at the top of the page until it's sorted: running out of food, ammo, runes or materials, nothing training, no XP for a while, the game not saving, or a full bank.
-- The Overview shows what you're doing (a fight included), how long to your next level, how long your supplies last, and what to make or buy before you start so you can keep going for a few hours.
-- A green dot in the menu marks the pages what you're doing touches, such as Combat while you fight or Rare items when your action can give one you haven't found.
-- When you come back after a while, the Overview sums up what happened: XP and levels gained, gold, rare finds, and whether anything stopped.
+- Home shows what you're doing (a fight included), how long to your next level, how long your supplies last, and what to make or buy before you start so you can keep going for a few hours.
+- The menu has eight sections, each with its pages as tabs. A green dot marks the sections and pages what you're doing touches, such as Combat while you fight or Rare items when your action can give one you haven't found.
+- When you come back after a while, Home sums up what happened: XP and levels gained, gold, rare finds, and whether anything stopped.
 - The same warnings, plus level-ups, rare finds, finished plan steps, ready harvests and hungry ranch animals, can arrive as desktop notifications even with the page closed. Turn them on in Settings.
 - The Pop out button gives you a small always-on-top window with what you're doing, what's next and any warnings.
 
@@ -38,8 +38,8 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 
 | | |
 | --- | --- |
-| ![Overview](docs/screenshots/overview.png) | ![Toolbelts](docs/screenshots/toolbelts.png) |
-| Overview: every skill at a glance, what you're doing now and what runs out first | Toolbelts: items in your bank worth putting on, and what each one gives |
+| ![Home](docs/screenshots/overview.png) | ![Toolbelts](docs/screenshots/toolbelts.png) |
+| Home: what you're doing now, what runs out first, and your plan | Toolbelts: items in your bank worth putting on, and what each one gives |
 | ![Combat](docs/screenshots/combat.png) | ![Rare items](docs/screenshots/rare.png) |
 | Combat: the best gear you own for what you're fighting, and what to fight with it | Rare items: your progress by rarity, where to get each one and how long it takes |
 | ![Bank](docs/screenshots/bank.png) | ![A skill](docs/screenshots/skill.png) |
@@ -47,7 +47,7 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 
 It also fits a narrow window, so you can keep it next to the game:
 
-<img src="docs/screenshots/mobile.png" alt="The plan in a narrow window" width="300">
+<img src="docs/screenshots/mobile.png" alt="Home in a narrow window" width="300">
 
 ## Download and run
 

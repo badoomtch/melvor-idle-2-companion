@@ -1,5 +1,5 @@
 // Skills: every training method for one skill.
-import { planTraining, rankSkill } from '/engine/advisor.js';
+import { bestSustained, obtain, planTraining, producerIndex, rankSkill } from '/engine/advisor.js';
 import { farmingPlots, plotRanges } from '/engine/farming-plots.js';
 import { grainMillModel } from '/engine/grain-mill.js';
 import { masteryStatus } from '/engine/mastery.js';
@@ -7,6 +7,9 @@ import { ranchModel } from '/engine/ranch.js';
 import { STEP_VERBS } from '/engine/route-progress.js';
 import { badge, duration, esc, exact, iconImg, num, pct } from '/ui/format.js';
 import { handsOnTasks, masteryPlanFor, rankBonusText, taskLine } from './mastery-ui.js';
+import { toolUpgradesCard } from './toolbelt-ui.js';
+import { nextUnlocksCard } from './next.js';
+import { skillGrid } from './overview.js';
 import { card, gatherStep, itemLink, memo, methodIcon, methodLink, methodRows, pageHead, saveKey, skillName, stat, table } from './shared.js';
 
 const HOUR_MS = 3_600_000;
@@ -203,6 +206,8 @@ function pathCard(ctx, skill, planFor) {
 
 export function skills(ctx, [skillArg]) {
   const { gd, state } = ctx;
+  // No skill picked: every skill at a glance, and each one's next unlock.
+  if (!skillArg) return `${pageHead('All skills', 'Your level and best method in each skill. Pick one for its methods, Mastery Guild tasks and gear within reach.')}${skillGrid(ctx)}${nextUnlocksCard(ctx)}`;
   const skill = gd.trainableSkills.includes(skillArg) ? skillArg : state.ui.lastSkill && gd.trainableSkills.includes(state.ui.lastSkill) ? state.ui.lastSkill : gd.trainableSkills[0];
   state.ui.lastSkill = skill;
   const override = state.ui.skillOverride[skill];
@@ -210,7 +215,19 @@ export function skills(ctx, [skillArg]) {
   const levels = { ...ctx.levels, [skill]: level };
   const ranked = rankSkill(gd, skill, levels, { by: state.ui.sort === 'profit' ? 'profit' : 'xp' });
   const sort = state.ui.sort;
-  const all = [...ranked.available, ...ranked.all.filter((x) => !x.ok).sort((a, b) => a.method.level - b.method.level)];
+  // Methods needing something nothing you can do makes (a Damaged Stoners Pickaxe), unless you have an
+  // hour of it: marked, and not the best.
+  const index = memo('overview:producers', saveKey(ctx), () => producerIndex(gd, ctx.levels));
+  const stock = new Map(Object.entries(ctx.stock ?? {}));
+  const marked = ranked.available.map((x) => {
+    // Plans don't count Farming as a way to get materials (a crop takes hours), so say when it grows them.
+    const grown = (item) => (gd.methodsBySkill.Farming ?? []).some((m) => m.product?.item === item && gd.checkRequirements(m, ctx.levels).ok);
+    const cantGet = x.rates.inputs.filter((i) => !Number.isFinite(obtain(index, stock, i.item, i.perHour).hours)).map((i) => ({ item: i.item, have: stock.get(i.item) ?? 0, farming: grown(i.item) }));
+    return cantGet.length ? { ...x, cantGet } : x;
+  });
+  const all = [...marked, ...ranked.all.filter((x) => !x.ok).sort((a, b) => a.method.level - b.method.level)];
+  // Sorted by XP, the best is the skill card's: counting the time to get an hour's materials.
+  const bestKey = state.ui.sort === 'xp' || !state.ui.sort ? bestSustained(gd, ranked, index, stock)?.method.key ?? null : null;
   if (sort === 'level') all.sort((a, b) => a.method.level - b.method.level || a.method.name.localeCompare(b.method.name));
   const chips = gd.trainableSkills
     .map((s) => `<a class="chip" href="#/skills/${s}"${s === skill ? ' aria-current="page"' : ''}>${badge(s, skillName(ctx, s))}${esc(skillName(ctx, s))} <span class="muted">${ctx.levels[s] ?? 1}</span></a>`)
@@ -226,8 +243,9 @@ export function skills(ctx, [skillArg]) {
     <div class="chips">${chips}</div>
     ${pathCard(ctx, skill, override)}
     ${masteryCard(ctx, skill)}
+    ${toolUpgradesCard(ctx, { skill, title: 'Gear within reach', ready: 6, soon: 4 })}
     ${skill === 'Farming' ? `${farmingCard(ctx)}${grainMillCard(ctx)}` : skill === 'Ranching' ? ranchCard(ctx) : ''}
     ${controls}
-    ${table(['Method', '#Lvl', '#XP / h', '#GP / h', 'Notes'], methodRows(ctx, all, { columns: [], markBest: sort !== 'level' }))}
+    ${table(['Method', '#Lvl', '#XP / h', '#GP / h', 'Notes'], methodRows(ctx, all, { columns: [], markBest: sort !== 'level', bestKey }))}
     <p class="small muted" style="margin-top:10px">GP/h is profit: what you gain minus what you use up (materials and food), at sell prices. ${ctx.gd.playerBonuses ? 'Includes your shop upgrades, toolbelt items, pets and Mastery Guild rank.' : 'Base rates (bonuses switched off in Settings).'}</p>`;
 }

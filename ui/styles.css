@@ -588,3 +588,19 @@ body.mini-mode main { padding: 0; }
 
 /* Rare items: the rarity buttons wrap on a narrow screen instead of hiding the last ones. */
 .segmented.wrap { flex-wrap: wrap; max-width: 100%; }
+
+/* A section's pages, as tabs along the top of the page. */
+.subtabs { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 16px; border-bottom: 1px solid var(--border); }
+.subtabs a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  margin-bottom: -1px;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.subtabs a:hover { color: var(--text); text-decoration: none; }
+.subtabs a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.subtabs .doing-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }

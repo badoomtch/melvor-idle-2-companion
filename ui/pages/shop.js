@@ -1,11 +1,11 @@
 // Shop planner: upgrades ranked by how fast they pay for themselves.
-import { currentActivity, rankSkill, trainNext } from '/engine/advisor.js';
+import { bestSustained, currentActivity, producerIndex, rankSkill, trainNext } from '/engine/advisor.js';
 import { skillGains } from '/engine/history.js';
 import { bankCapacity } from '/engine/bank-space.js';
 import { buyOrMake } from '/engine/buy-or-make.js';
 import { bankSpaceOptions, planShop } from '/engine/shop.js';
 import { badge, duration, esc, exact, gp, iconImg, pct } from '/ui/format.js';
-import { card, enc, itemLink, levelsKey, memo, methodLink, pageHead, requirementText, skillName, table } from './shared.js';
+import { card, enc, itemLink, levelsKey, memo, methodLink, pageHead, requirementText, saveKey, skillName, table } from './shared.js';
 
 // ---------- Shop planner ----------
 
@@ -48,11 +48,14 @@ export function shopPlanner(ctx) {
   const { gd } = ctx;
   const purchased = ctx.save?.shopPurchases ?? {};
   const { skills: trained, activity } = trainedSkills(ctx);
-  // The method used for each skill: your current action, or the best XP method at your level.
+  // The method used for each skill: your current action, or the best XP method at your level that you
+  // can keep doing (counting the time to get its materials).
   const trains = {};
+  const index = memo('overview:producers', saveKey(ctx), () => producerIndex(gd, ctx.levels));
   for (const skill of gd.trainableSkills) {
     const current = activity?.skill === skill && activity.method;
-    trains[skill] = current || rankSkill(gd, skill, ctx.levels).best?.method;
+    const ranked = current ? null : rankSkill(gd, skill, ctx.levels);
+    trains[skill] = current || (bestSustained(gd, ranked, index, ctx.stock) ?? ranked.best)?.method;
   }
   const rows = planShop(gd, { levels: ctx.levels, purchased, trains }).sort((a, b) => (a.paybackHours ?? Infinity) - (b.paybackHours ?? Infinity) || b.gainXp - a.gainXp);
   const yours = rows.filter((r) => trained.has(r.skill));

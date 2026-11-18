@@ -2,8 +2,10 @@
 // best item you own that fits, when it beats what's there: measured on the skill's best methods at
 // your levels and on what you're doing now, or (for an empty slot) any bonus at all. Skilling sets
 // are tried as a whole, since their bonus needs several pieces. Isomorphic.
+import { hoursToLevel, obtainEach, producerIndex } from './advisor.js';
 import { buildEnemy, scoreGear } from './combat.js';
 import { playerBonuses, playerCombatMods } from './gamedata.js';
+import { timeUpgrades, upgradeSources } from './gear-upgrades.js';
 import { bonusApplies, computeRates } from './rates.js';
 
 const MIN_SHARE = 0.005; // under half a percent isn't worth a trip to the bank
@@ -59,21 +61,66 @@ const doable = (gd, m, levels) => {
   return req.ok && !req.equip.length && !req.unknown.length;
 };
 
+// For each method of a skill that uses materials: the hours it takes to get an hour's worth (the bank
+// first, then gathering or making them), Infinity when nothing you can do makes one of them. Worked
+// out once per save and skill level: a toolbelt barely changes it.
+const materialMemo = new WeakMap();
+function materialHours(gd, save, skill, levels) {
+  const owner = gd.player ?? save;
+  if (!owner) return new Map();
+  let memo = materialMemo.get(owner);
+  if (!memo) materialMemo.set(owner, (memo = { index: producerIndex(gd, levels), stock: new Map(Object.entries(gd.player?.owned ?? save?.bank?.items ?? {})), skills: new Map() }));
+  const level = gd.levelOf(levels, skill);
+  const key = `${skill}|${level}`;
+  if (!memo.skills.has(key)) {
+    const hours = new Map();
+    for (const m of gd.methodsBySkill[skill] ?? []) {
+      const r = computeRates(gd, m, level);
+      if (!r.inputs.length) continue;
+      hours.set(m.key, obtainEach(memo.index, memo.stock, r.inputs.map((i) => ({ item: i.item, qty: i.perHour }))).reduce((h, g) => h + g.hours, 0));
+    }
+    memo.skills.set(key, hours);
+  }
+  return memo.skills.get(key);
+}
+
 // Every method of the skill you can do with this toolbelt, with its rates; the best for XP and GP.
-function skillMeasure(gd, save, skill, belt, levels) {
+// With `base` (a measure of the same skill at the same levels) and `only` (method keys), just those
+// methods are rated again and the rest are taken from `base`: for one item, only the methods it changes.
+function skillMeasure(gd, save, skill, belt, levels, { base = null, only = null } = {}) {
+  const materials = materialHours(gd, save, skill, levels);
   return withBelt(gd, save, skill, belt, (bonuses) => {
-    const per = new Map();
+    const per = new Map(base?.per ?? []);
+    for (const m of gd.methodsBySkill[skill] ?? []) {
+      if (only && !only.has(m.key)) continue;
+      if (!doable(gd, m, levels)) {
+        per.delete(m.key);
+        continue;
+      }
+      per.set(m.key, computeRates(gd, m, gd.levelOf(levels, skill), { bonuses }));
+    }
+    // Your fastest training and best money maker: counting the time to get an hour's materials, and
+    // not one that needs something nothing you can do makes (Smithing a Damaged Stoners Pickaxe).
     let xp = null;
     let gp = null;
-    for (const m of gd.methodsBySkill[skill] ?? []) {
-      if (!doable(gd, m, levels)) continue;
-      const r = computeRates(gd, m, gd.levelOf(levels, skill), { bonuses });
-      per.set(m.key, r);
-      if (!xp || r.xpPerHour > xp.xpPerHour) xp = r;
-      if (!gp || r.profitPerHour > gp.profitPerHour) gp = r;
+    let xpRate = 0;
+    let gpRate = 0;
+    for (const r of per.values()) {
+      const h = materials.get(r.method.key) ?? 0;
+      if (!Number.isFinite(h)) continue;
+      if (!xp || r.xpPerHour / (1 + h) > xpRate) [xp, xpRate] = [r, r.xpPerHour / (1 + h)];
+      if (!gp || r.profitPerHour / (1 + h) > gpRate) [gp, gpRate] = [r, r.profitPerHour / (1 + h)];
     }
-    return { per, xp, gp };
+    return { per, xp, gp, xpRate, gpRate };
   });
+}
+
+// The methods of a skill that putting `item` in place of `replaced` can change: those either one's
+// bonuses apply to, those it's used up by, and any that need a tool.
+function touchedBy(gd, skill, item, replaced) {
+  const effects = [item, replaced].filter(Boolean).flatMap((id) => gd.items[id]?.tool?.effects ?? []);
+  const usedUp = [item, replaced].some((id) => gd.items[id]?.tool?.usedUp);
+  return new Set((gd.methodsBySkill[skill] ?? []).filter((m) => usedUp || effects.some((e) => bonusApplies(e, m)) || (m.requires ?? []).some((r) => r.type === 'tool')).map((m) => m.key));
 }
 
 // One combat measure: the fight you'd do with this combat toolbelt.
@@ -100,8 +147,8 @@ function compare(before, after, current) {
   }
   // Something you're doing now that this would stop you doing (it needs the tool you'd take off).
   if (current && before.per.has(current) && !after.per.has(current)) return { score: -Infinity };
-  const xp = share(after.xp?.xpPerHour ?? 0, before.xp?.xpPerHour ?? 0);
-  const gp = before.gp?.profitPerHour > 0 ? share(after.gp?.profitPerHour ?? 0, before.gp.profitPerHour) : 0;
+  const xp = share(after.xpRate ?? 0, before.xpRate ?? 0);
+  const gp = before.gpRate > 0 ? share(after.gpRate ?? 0, before.gpRate) : 0;
   const was = current && before.per.get(current);
   const now = current && after.per.get(current);
   const cur = was && now ? { xp: share(now.xpPerHour, was.xpPerHour), gp: was.profitPerHour > 0 ? share(now.profitPerHour, was.profitPerHour) : 0, method: now.method } : null;
@@ -117,7 +164,7 @@ function compare(before, after, current) {
   return {
     score: xp + gp + (cur ? cur.xp + cur.gp : 0),
     xp: { share: xp, method: after.xp?.method },
-    gp: { share: gp, perHour: (after.gp?.profitPerHour ?? 0) - (before.gp?.profitPerHour ?? 0), method: after.gp?.method },
+    gp: { share: gp, perHour: (after.gpRate ?? 0) - (before.gpRate ?? 0), method: after.gp?.method },
     current: cur,
     scoped: scoped?.gain > 0 ? scoped : null,
     lost,
@@ -346,4 +393,82 @@ export function toolbeltForStep(gd, save, step, { levels }) {
   // Nothing changed, or the step still can't be done (it needs a tool you don't have at all).
   if (!changes.length || base <= 0) return null;
   return { changes, gain: start > 0 ? base / start - 1 : null, needed: start <= 0 };
+}
+
+// "A few levels away" for toolbelt items: within this many levels of every level they need.
+const UPGRADE_LEVELS_AWAY = 15;
+// One percent better counts as 1, like combat gear (gearUpgrades' MIN_GAIN); under that, only when it's
+// quick to get (0.2%, its MIN_QUICK_GAIN).
+const WORTH_UNIT = 0.01;
+const MIN_QUICK_SHARE = 0.002;
+
+/**
+ * Toolbelt items you don't have yet that would make a skill better, and how to get them. For every slot
+ * of each skill's toolbelt that's open (or opens with levels), each item that fits is tried in place of
+ * the best you could already wear (toolbeltAdvice's swaps from your bank) and measured the same way: your
+ * best XP and GP in the skill and what you're doing now. Items used up as you go (potions) are timed for
+ * an hour's worth. Sources and timing are gearUpgrades': make it, buy it, or a few levels away.
+ * @param skills only these skills (default: every skill with a toolbelt, not Combat)
+ * @param advice toolbeltAdvice() result, when you have it
+ * @returns { ready, soon }: rows { skill, item, slot, replaces, gain (compare(): xp, gp, current, scoped),
+ *   worth, qty, usedUp, source, needs: [{ skill, level, hours }], levelHours }, best first
+ */
+export function toolUpgrades(gd, save, { levels, skills = null, current = null, index = null, xp = {}, wallet = null, purchased = null, advice = null }) {
+  if (!save?.bank) return { ready: [], soon: [] };
+  const bank = save.bank.items ?? {};
+  advice ??= toolbeltAdvice(gd, save, { levels, current });
+  index ??= producerIndex(gd, levels);
+  const rows = [];
+  for (const [skill, slots] of Object.entries(gd.raw.toolbelts ?? {})) {
+    if (skill === 'Combat' || (skills && !skills.includes(skill)) || !gd.methodsBySkill[skill]?.length) continue;
+    // The belt you'd have after putting on the best of what you own.
+    let belt = (save.toolbelts?.[skill] ?? []).filter((t) => t.slot);
+    for (const c of advice.skills.find((s) => s.skill === skill)?.changes ?? []) belt = setBelt(belt, c.slot.id, c.item, gd.items[c.item].tool.usedUp ? c.have : 1);
+    const have = new Set([...belt.map((t) => t.item), ...Object.keys(bank).filter((id) => bank[id] > 0)]);
+    const measured = new Map();
+    const baseAt = (lv) => {
+      const key = JSON.stringify(lv[skill]);
+      if (!measured.has(key)) measured.set(key, skillMeasure(gd, save, skill, belt, lv));
+      return measured.get(key);
+    };
+    const best = new Map();
+    for (const slot of slots) {
+      // Open, or opens once you have the levels; one behind a purchase or a rank isn't "within reach".
+      const slotNeeds = (slot.requires ?? []).filter((r) => r.type === 'level' && gd.levelOf(levels, r.skill) < r.level);
+      if (!slotStatus(gd, save, slot, levels).open && (slot.requires ?? []).some((r) => r.type !== 'level')) continue;
+      for (const [id, item] of Object.entries(gd.items)) {
+        const tool = item.tool;
+        if (tool?.slot !== slot.fits || have.has(id) || !measurable(gd, skill, id)) continue;
+        const req = gd.checkRequirements({ skill: null, level: 0, requires: tool.requires ?? [] }, levels);
+        if (req.unknown.length || req.missing.some((r) => r.type !== 'level')) continue;
+        const wear = [...slotNeeds, ...req.missing];
+        if (wear.some((r) => r.level - gd.levelOf(levels, r.skill) > UPGRADE_LEVELS_AWAY)) continue;
+        // Measured as if you had the levels to wear it, against what you'd have then.
+        const lv = { ...levels };
+        for (const r of wear) lv[r.skill] = Math.max(gd.levelOf(lv, r.skill), r.level);
+        const replaces = belt.find((t) => t.slot === slot.id)?.item ?? null;
+        const base = baseAt(lv);
+        const after = skillMeasure(gd, save, skill, setBelt(belt, slot.id, id, 1e6), lv, { base, only: touchedBy(gd, skill, id, replaces) });
+        const c = compare(base, after, current);
+        // Overall better (your best XP and GP, and what you're doing now): helping one method you'd never
+        // use isn't worth getting. Small gains stay for timeUpgrades, which keeps them only when quick.
+        const worth = c.score / WORTH_UNIT;
+        if (!(c.score >= MIN_QUICK_SHARE)) continue;
+        if ((best.get(id)?.worth ?? -Infinity) >= worth) continue;
+        const perHour = after.xp?.toolUse?.find((t) => t.item === id)?.perHour ?? 0;
+        const qty = tool.usedUp ? Math.max(1, Math.ceil(perHour)) : 1;
+        best.set(id, { skill, item: id, slot, replaces, gain: c, worth, qty, usedUp: !!tool.usedUp, wear,
+          sources: upgradeSources(gd, id, qty, { levels, purchased: purchased ?? save.shopPurchases ?? {}, wallet }) });
+      }
+    }
+    rows.push(...best.values());
+  }
+  const stock = new Map(Object.entries(bank));
+  const hours = new Map();
+  const timeTo = (s, level) => {
+    const key = `${s}|${level}`;
+    if (!hours.has(key)) hours.set(key, hoursToLevel(gd, s, levels, xp[s] ?? gd.xp.xpForLevel(gd.levelOf(levels, s)), level, { bank, index }));
+    return hours.get(key);
+  };
+  return timeUpgrades(gd, rows, { levels, stock, index, timeTo, wallet });
 }

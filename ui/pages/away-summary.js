@@ -2,6 +2,7 @@
 // or more, with what happened since you last had it open. app.js notices you were away and fetches the
 // stored history and rare finds once; levels, XP and gold come from that history (engine/history.js).
 import { summary, xpOf } from '/engine/history.js';
+import { span, stuckFor } from '/engine/stuck.js';
 import { activityKey } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, num } from '/ui/format.js';
 import { findList } from './rare.js';
@@ -9,8 +10,6 @@ import { signed, skillName, stat } from './shared.js';
 
 // The game autosaves every 10 seconds: two minutes without a save means it stopped.
 const STALE_MS = 120_000;
-// The same action this long without XP is stuck (history points are 5 minutes apart).
-const STUCK_MS = 15 * 60_000;
 const FIND_ROWS = 5;
 const timeFmt = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
 
@@ -33,7 +32,9 @@ function lastGain(points) {
 }
 
 // Whether the game stopped doing anything, and what to do about it. Read from the save as it is now, so it
-// goes once you've sorted it out.
+// goes once you've sorted it out. "Not gaining XP" is the same live check as the top bar's (each autosave
+// against the last ones), not the history this card fetched when you came back: that stops at the moment
+// you came back, so with the card left open it would look stuck while XP kept coming.
 function stopped(ctx, points, since) {
   const h = ctx.save.header;
   const age = Date.now() - h.timestamp;
@@ -41,8 +42,9 @@ function stopped(ctx, points, since) {
   const when = gained && gained > since ? `It last gained XP ${ago(gained)}.` : 'It gained no XP while you were away.';
   if (age > STALE_MS) return `<strong>The game last saved ${esc(ago(h.timestamp))}.</strong>It may have been closed, paused or frozen. Check on it to keep it going.`;
   const activity = activityKey(h);
-  if (!activity) return `<strong>Nothing is training.</strong>${when} Pick something to do from <a href="#/next">What next</a>.`;
-  if (gained && Date.now() - gained > STUCK_MS) return `<strong>${esc(activity)} isn't gaining XP.</strong>${when} Check the game: a full bank or running out of materials stops it.`;
+  if (!activity) return `<strong>Nothing is training.</strong>${when} Pick something to do from <a href="#/home">your plan</a>.`;
+  const stuck = stuckFor(ctx.gd, ctx.save, ctx.levels);
+  if (stuck) return `<strong>${esc(activity)} isn't gaining XP.</strong>No XP for ${esc(span(stuck.ms))}. Check the game: a full bank or running out of materials stops it.`;
   return '';
 }
 

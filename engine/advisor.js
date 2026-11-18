@@ -101,12 +101,14 @@ export function wholeActions(rates, perHour, qty) {
 // How much of an input `actions` actions use: the average, but never less than one action's worth.
 export const inputFor = (rates, input, actions) => Math.max((input.perHour / rates.cyclesPerHour) * actions, minEach(rates.method, input.item));
 
-// Everything you can gather or make right now, indexed by the item it produces.
+// Everything you can gather or make right now, indexed by the item it produces. Not what can kill you
+// while it runs (a pickpocket whose hits beat auto-eat): plans leave those to you.
 export function producerIndex(gd, levels) {
   const index = new Map();
   for (const method of gd.methods) {
     if (method.kind === 'farming' || !usable(gd.checkRequirements(method, levels))) continue;
     const rates = paced(gd, computeRates(gd, method, gd.levelOf(levels, method.skill)));
+    if (idleDanger(gd, rates)?.risky) continue;
     for (const o of rates.outputs) {
       if (!(o.perHour > 0) || rates.inputs.some((i) => i.item === o.item)) continue;
       if (!index.has(o.item)) index.set(o.item, []);
@@ -166,6 +168,43 @@ export function obtainEach(index, stock, wants, depth = MATERIAL_DEPTH, prefer =
     for (const u of got.uses) taken.set(u.item, (taken.get(u.item) ?? 0) + u.qty);
     return got;
   });
+}
+
+// How long getting an hour's materials for a method takes (the bank first, then gathering or making
+// them): 0 when it needs none, Infinity when nothing you can do makes one of them.
+export function materialHoursFor(rates, index, stock) {
+  if (!rates.inputs.length) return 0;
+  return obtainEach(index, stock, rates.inputs.map((i) => ({ item: i.item, qty: i.perHour }))).reduce((h, g) => h + g.hours, 0);
+}
+
+// A skill's best method you can keep doing, from rankSkill(): ranked by XP (or profit) per hour counting
+// the time to get an hour's materials, so a recipe that needs something rare or slow to get (a Damaged
+// Stoners Pickaxe, Honey) doesn't come out on top. Skips anything that needs something nothing you can
+// do makes, and anything that can kill you while it runs. `xpPerHour` / `profitPerHour` count the
+// materials; `rates` is the method's own.
+export function bestSustained(gd, ranked, index, stock, { by = 'xp' } = {}) {
+  const bank = stock instanceof Map ? stock : new Map(Object.entries(stock ?? {}));
+  let best = null;
+  for (const x of ranked.available) {
+    if (x.unknown.length || idleDanger(gd, x.rates)?.risky) continue;
+    const materialHours = materialHoursFor(x.rates, index, bank);
+    if (!Number.isFinite(materialHours)) continue;
+    const row = { ...x, materialHours, xpPerHour: x.rates.xpPerHour / (1 + materialHours), profitPerHour: x.rates.profitPerHour / (1 + materialHours) };
+    if (!best || (by === 'profit' ? row.profitPerHour > best.profitPerHour : row.xpPerHour > best.xpPerHour)) best = row;
+  }
+  return best;
+}
+
+// producerIndex() and your stock, once per player state (each page draw makes a new one) and levels:
+// for bestSustained() where many parts of a page ask.
+const sustainMemo = new WeakMap();
+export function sustainInputs(gd, levels) {
+  const owner = gd.player;
+  if (!owner) return null;
+  const key = JSON.stringify(levels);
+  let memo = sustainMemo.get(owner);
+  if (!memo || memo.key !== key) sustainMemo.set(owner, (memo = { key, index: producerIndex(gd, levels), stock: new Map(Object.entries(owner.owned ?? {})) }));
+  return memo;
 }
 
 // Rates for planning, worked out once per method, and per level only for methods that change with level
@@ -470,9 +509,16 @@ export function currentActivity(gd, header, levels) {
   const picked = header.pickedPath && header.pickedPath !== header.activePath ? gd.methodByKey.get(`${skill}/${header.pickedPath}`) ?? null : null;
   const ranked = rankSkill(gd, skill, levels);
   const rates = method ? computeRates(gd, method, ranked.level) : null;
+  // With a save: the best you can keep doing (counting the time to get materials), compared on the same
+  // terms with what you're doing. Without one, the plain rates.
   const confirmed = ranked.available.filter((x) => x.unknown.length === 0);
-  const bestXp = confirmed[0] ?? null;
-  const bestProfit = [...confirmed].sort((a, b) => b.rates.profitPerHour - a.rates.profitPerHour)[0] ?? null;
+  const sustain = sustainInputs(gd, levels);
+  const bestXp = (sustain && bestSustained(gd, ranked, sustain.index, sustain.stock)) ?? confirmed[0] ?? null;
+  const bestProfit = (sustain && bestSustained(gd, ranked, sustain.index, sustain.stock, { by: 'profit' })) ?? [...confirmed].sort((a, b) => b.rates.profitPerHour - a.rates.profitPerHour)[0] ?? null;
+  const ownHours = sustain && rates ? materialHoursFor(rates, sustain.index, sustain.stock) : 0;
+  const own = rates ? { xpPerHour: rates.xpPerHour / (1 + (Number.isFinite(ownHours) ? ownHours : 0)), profitPerHour: rates.profitPerHour / (1 + (Number.isFinite(ownHours) ? ownHours : 0)) } : null;
+  const bestXpRate = bestXp?.xpPerHour ?? bestXp?.rates.xpPerHour;
+  const bestProfitRate = bestProfit?.profitPerHour ?? bestProfit?.rates.profitPerHour;
   return {
     skill,
     label: [header.activeEntityName, header.activeActionName].filter(Boolean).join(' - '),
@@ -481,8 +527,9 @@ export function currentActivity(gd, header, levels) {
     rates,
     bestXp,
     bestProfit,
-    xpRatio: rates && bestXp?.rates.xpPerHour ? rates.xpPerHour / bestXp.rates.xpPerHour : null,
-    profitRatio: rates && bestProfit?.rates.profitPerHour > 0 ? rates.profitPerHour / bestProfit.rates.profitPerHour : null,
+    own,
+    xpRatio: own && bestXpRate ? own.xpPerHour / bestXpRate : null,
+    profitRatio: own && bestProfitRate > 0 ? own.profitPerHour / bestProfitRate : null,
   };
 }
 

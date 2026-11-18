@@ -1,6 +1,7 @@
 // Money: ranked money makers.
 import { bestMoney } from '/engine/advisor.js';
 import { esc } from '/ui/format.js';
+import { moneyUpgradesCard } from './next.js';
 import { methodRows, pageHead, table } from './shared.js';
 
 // ---------- Money ----------
@@ -13,6 +14,7 @@ export function money(ctx) {
     .join('')}</select></label>`;
   const head = ['Method', 'Skill', '#Lvl', '#XP / h', '#GP / h', 'Notes'];
   return `${pageHead('Making money', 'Ranked by profit per hour at your levels, after paying for materials and food.', foodSelect)}
+    ${moneyUpgradesCard(ctx)}
     <h2>No materials needed</h2>
     <p class="small muted">Gathering and thieving: you can start these with an empty bank.</p>
     ${table(head, methodRows(ctx, m.selfSufficient))}

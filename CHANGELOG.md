@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Gear within reach for every skill.** Toolbelt advice only looked at what's already in your bank. Each skill page now has "Gear within reach": toolbelt items you don't have that would make the skill better. Each item shows what it would do, measured on your fastest training, your best money maker and what you're doing now, and how to get it: make it, steal it, buy it, or the levels it needs first. The Toolbelts page lists the best of them for every skill as "Worth getting". Home's "Right now" card and the "Do this now" step name the best one for the skill you're on, for example "Fur Trapping Satchel for your toolbelt, +4.7% GP on Swamp Snake: make it in Beastcrafting".
+- **Combat in your plan.** The plan only ever trained skills with methods, so combat never came up. It now adds:
+  - a combat level that lets you wear something better, with gear you own, can buy or can make. It's trained by the fight that gives that skill the most XP, with its own stance: "Fight Spitterfish until Defence 55 (Melee, Block stance)".
+  - combat Mastery Guild ranks, their kill tasks done by fighting.
+  - toolbelt items worth making, such as Bandit Gloves for +42% Thieving GP/h.
+
+  Fight steps tick off from your save like any other step.
+- **Your goals drive the plan.** Levels you set on the Goals page now go first in your plan, straight to the level you set, and the plan is made again when you add or remove one. Goals in combat skills are planned as fights.
+
+### Changed
+
+- **A smaller menu: eight sections, each with its pages as tabs.**
+  - **Home:** your plan and Goals.
+  - **Skills:** All skills, Mastery and Toolbelts.
+  - **Combat:** Combat and Slayer.
+  - **Money:** Making money, Away planner, Shop planner and Bank.
+  - **Collection:** Rare items, Completion and Quests.
+  - **Lookup:** Lookup and Calculators.
+  - **History:** History and Accuracy.
+  - **Settings.**
+
+  Overview and What next are now Home: what you're doing, your supplies and your plan. Money upgrades moved to Making money. Every skill's next unlock and the skill cards moved to All skills. Old links still work.
+- **Combat skill cards show your best fight**, with the stance that trains that skill ("Treant · 22.3k XP/h (Crush)"), in place of "See the Combat page". They're worked out quietly while Home is open, and again only when your combat levels, gear, food, ammo or runes change, so All skills shows them straight away.
+- **A skill's "best" is one you can keep doing.** It used to be the fastest method on paper, even if it needed something you can't get: Smithing's best was Stoners Pickaxe at 512k XP/h, which needs a Damaged Stoners Pickaxe that only drops, and Cooking's was Cherry Pancake, with no way to get Cherries. The skill cards, Home's "Right now" card, the Shop planner and Gear within reach now count the time it takes to get an hour's materials, and skip anything that needs something nothing you can do makes. Smithing's best is now Rune 2H Throw Hammer, and Cooking's is Cod. A skill's table marks those recipes: "You have 8 Stoner's Pickaxe (Damaged), and nothing you can do makes more".
+- **New plans are made in the background.** The page stays quick while a plan is made. Your plan stays up with "Making a new plan…" until the new one is ready.
+- **Gear you own but can't wear yet** now appears in the Combat page's "A few levels away".
+
+### Fixed
+
+- **"While you were away" no longer says an action stopped when it's still going.** The card read your history once, when you came back to the page. Left open, it kept comparing the time now with the last XP in that snapshot, so after 15 minutes it said "Cooking - Cod isn't gaining XP. It last gained XP 41 min ago" while Cooking was still gaining XP. It now uses the same live check as the top bar's "No XP" warning, comparing each autosave with the ones before it.
+- **Your goals always reach your plan.** The page only sent your goals to the companion when you added or removed one, or with desktop notifications on. A companion that didn't have them made plans without them: one running from another folder, or one that was closed when you added a goal. The page now sends them whenever the companion's copy is different, and a new plan with them is made straight away.
+- **Plans never send you to a pickpocket that can kill you**, either for materials or for gear (the Capital Citizen for Commoner Shoes at low Hitpoints).
+- **A fight for gear lists its steps in the order you do them:** fight to the level, then make the gear. It used to show the making first, under "Stock up".
+- **Steps per craft are rounded:** "about 9.5 steps per craft", not "9.487362050551763".
+- **A gear goal says how many you need: 1.** It used to say "Make 2" because doubling made a second one likely. It also says "Get" for gear you steal or find.
+- **The Toolbelts page is much quicker.** Working out your Mastery Guild bonuses was most of its time, and it's now done once.
+
 ## 0.4.5
 
 ### Changed

@@ -1,16 +1,13 @@
-// The plan on What next, kept by the companion itself (history/routes.json, never near the game's
-// files) and checked against every autosave: steps tick off, a new plan is made when one is finished or
-// stuck, and a desktop notification says what's done and what's next, page open or not. The page shows
+// Your plan, kept by the companion itself (history/routes.json, never near the game's files) and checked
+// against every autosave: steps tick off, a new plan is made when one is finished or stuck or your goals
+// change, and a desktop notification says what's done and what's next, page open or not. The page shows
 // the plan and can ask for a new one.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { speedFactors } from '../engine/accuracy.js';
-import { bankCapacity, bankRoom } from '../engine/bank-space.js';
-import { currentActivity } from '../engine/advisor.js';
-import { playerBonuses, playerState } from '../engine/gamedata.js';
-import { extraGoals } from '../engine/route-goals.js';
-import { describeStep, lockRoute, routeProgress } from '../engine/route-progress.js';
+import { describeStep, routeProgress } from '../engine/route-progress.js';
 import { planRoute } from '../engine/route.js';
+import { makePlan, planInputs } from './plan-maker.js';
 
 // A plan that's stuck or finished is planned again at most this often, so a plan that can't start
 // doesn't send a new notification with every autosave.
@@ -20,8 +17,11 @@ const SHORT_REPLAN_MS = 10 * 60_000;
 /**
  * @param actions (id) => what each action has really given you so far (the observation store's record),
  *   so plans use your own speed where it's been measured
+ * @param maker (job) => Promise of a locked plan (planWorker(): a worker thread), so the companion keeps
+ *   going while a plan is made; without one, plans are made inline with `plan`
+ * @param onPlan (id) => called when a plan made in the background is ready, to tell the page
  */
-export function createRouteWatcher({ gd, dir, notify, settings, actions = () => null, plan = planRoute, now = () => Date.now() }) {
+export function createRouteWatcher({ gd, dir, notify, settings, actions = () => null, plan = planRoute, now = () => Date.now(), maker = null, onPlan = () => {} }) {
   const file = join(dir, 'routes.json');
   let routes = {};
   try {
@@ -35,36 +35,47 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
   };
   const latest = new Map(); // save id -> last parse, to plan again on request
   const warned = new Set(); // plans already warned about bank space (by when they were made)
+  const making = new Map(); // save id -> the plan being made in the background (a promise)
 
-  // What the planner needs from a save: levels, XP, what you own, and what you're doing.
-  function inputs(save) {
-    gd.player = playerState(save, gd);
-    gd.playerBonuses = settings().useBonuses === false ? null : playerBonuses(gd, save);
-    const levels = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.level]));
-    const xp = Object.fromEntries(Object.entries(save.skills).map(([k, s]) => [k, s.xp]));
-    return { levels, xp, bank: gd.player.owned, mastery: save.mastery ?? null, current: currentActivity(gd, save.header, levels)?.method?.key ?? null,
-      bankItems: save.bank?.items ?? {}, room: bankRoom(gd, save) ?? { items: {}, free: bankCapacity(gd, save).free } };
-  }
+  // Your own goals from the Goals page (sent with the alert settings): they go first in a plan, and a
+  // plan made before you changed them is made again.
+  const targets = () => (settings().goals ?? []).filter((g) => g?.skill && g.target > 0).map(({ skill, target }) => ({ skill, target }));
+  const goalsKey = () => JSON.stringify(targets().map((t) => `${t.skill}|${t.target}`).sort());
+  const inputs = (save) => planInputs(gd, save, { useBonuses: settings().useBonuses !== false });
 
+  // A new plan: made here and returned, or (with a maker) started in the background and returned as a
+  // promise, which says what's new when it's ready. Only one at a time per save.
   function make(id, save, why, prefer) {
     const input = inputs(save);
-    // Gear to make and Mastery ranks to earn: slow to work out, so only when a plan is made.
-    let extras = [];
-    try {
-      extras = extraGoals(gd, save, input);
-    } catch (e) {
-      console.error(`Could not weigh gear and Mastery goals: ${e.message}`);
-    }
     // Your own speed at what you've done a while.
     const speed = actions(id) ? speedFactors(gd, actions(id), input.levels) : {};
-    gd.planSpeed = Object.keys(speed).length ? speed : null;
-    let route;
-    try {
-      route = plan(gd, { ...input, prefer, extras, purchased: save.shopPurchases ?? {} });
-    } finally {
-      gd.planSpeed = null;
+    const job = { save, why, prefer, useBonuses: settings().useBonuses !== false, targets: targets(), speed, madeAt: now(), goalsKey: goalsKey() };
+    if (!maker) return keep(id, makePlan(gd, job, plan));
+    if (!making.has(id)) {
+      const pending = maker(job)
+        .then((locked) => {
+          keep(id, locked);
+          // What's new, against the latest autosave (it may have moved on while the plan was made).
+          const progress = routeProgress(gd, locked, inputs(latest.get(id) ?? save));
+          if (progress.newlyDone.length) {
+            locked.done.push(...progress.newlyDone);
+            write();
+          }
+          send(events(null, { ...progress, madeAt: locked.madeAt }, why));
+          onPlan(id);
+          return locked;
+        })
+        .catch((e) => {
+          console.error(`Could not make a plan: ${e.message}`);
+          return null;
+        })
+        .finally(() => making.delete(id));
+      making.set(id, pending);
     }
-    const locked = { ...lockRoute(route, { madeAt: now(), speed }), why };
+    return making.get(id);
+  }
+
+  function keep(id, locked) {
     routes[id] = locked;
     write();
     return locked;
@@ -79,10 +90,11 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
     if (why?.ranOut) out.push({ title: `Out of ${gd.itemName(why.ranOut)}: new plan`, body: next });
     else if (why?.short) out.push({ title: `Not enough ${gd.itemName(why.short)} any more: new plan`, body: next });
     else if (why?.done) out.push({ title: 'Plan finished: here’s the next one', body: next });
+    else if (why?.goals) out.push({ title: 'Your goals changed: new plan', body: next });
     // Said once per plan: the bank won't hold what it brings in.
     if (progress.space && !warned.has(progress.madeAt)) {
       warned.add(progress.madeAt);
-      out.push({ title: `Bank space: ${progress.space.short} more slot${progress.space.short === 1 ? '' : 's'} needed`, body: 'Your plan brings in new items your bank has no room for. What next says what to clear.' });
+      out.push({ title: `Bank space: ${progress.space.short} more slot${progress.space.short === 1 ? '' : 's'} needed`, body: 'Your plan brings in new items your bank has no room for. Your plan on Home says what to clear.' });
     }
     if (!before) return out;
     const goals = progress.legs.filter((l) => l.done && l.steps.some((st) => !before.has(st.id)));
@@ -119,11 +131,21 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
     // One nothing can make up means a new plan from the bank as it is now, unless this plan was only just
     // made for that same shortage (the planner had no better way, so don't keep churning).
     const short = progress?.short && !(locked?.why?.short === progress.short.item && now() - (locked.madeAt ?? 0) < SHORT_REPLAN_MS) ? progress.short : null;
-    if (!locked || progress.broken || (due && (progress.finished || progress.blocked || short))) {
-      why = !locked || progress.broken ? null : progress.finished ? { done: true } : progress.blocked ? { ranOut: progress.blocked } : { short: short.item, need: short.need, have: short.have };
-      locked = make(id, save, why, locked?.decisions);
-      progress = routeProgress(gd, locked, input);
-      fresh = true;
+    // Goals you've added or removed since this plan was made: plan again for them.
+    const goalsChanged = !!locked && (locked.goalsKey ?? '[]') !== goalsKey();
+    if (!locked || progress.broken || goalsChanged || (due && (progress.finished || progress.blocked || short))) {
+      why = !locked || progress.broken ? null : goalsChanged ? { goals: true } : progress.finished ? { done: true } : progress.blocked ? { ranOut: progress.blocked } : { short: short.item, need: short.need, have: short.have };
+      const made = make(id, save, why, locked?.decisions);
+      if (typeof made?.then === 'function') {
+        // Being made in the background: it says what's new when it's ready. Until then the plan you had
+        // keeps ticking off, if there is one that still works.
+        if (!locked || progress.broken) return [];
+        why = null;
+      } else {
+        locked = made;
+        progress = routeProgress(gd, locked, input);
+        fresh = true;
+      }
     }
     const before = new Set(locked.done);
     if (progress.newlyDone.length) {
@@ -135,12 +157,12 @@ export function createRouteWatcher({ gd, dir, notify, settings, actions = () => 
     return list;
   }
 
-  /** A new plan now, from the latest autosave of that save. */
+  /** A new plan now, from the latest autosave of that save: the plan, or a promise of it with a maker. */
   function replan(id) {
     const save = latest.get(id);
     if (!save) return null;
     return make(id, save, null, null);
   }
 
-  return { onSave, replan, get: (id) => routes[id] ?? null };
+  return { onSave, replan, get: (id) => routes[id] ?? null, making: (id) => making.has(id) };
 }

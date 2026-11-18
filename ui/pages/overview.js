@@ -1,12 +1,13 @@
 // Overview: your character, what you are doing right now, supplies and every skill.
-import { bankInsights, currentActivity, obtain, producerIndex, rankSkill } from '/engine/advisor.js';
+import { bankInsights, bestSustained, currentActivity, obtain, producerIndex, rankSkill } from '/engine/advisor.js';
 import { shopOffer } from '/engine/shop.js';
 import { currentFight } from '/engine/current-fight.js';
 import { currentSupplies, stockUp } from '/engine/supplies.js';
 import { ago, badge, duration, esc, exact, gp, num, pct } from '/ui/format.js';
 import { awaySummary } from './away-summary.js';
-import { secs, styleOptions } from './combat.js';
-import { card, gatherStep, itemLink, memo, methodLink, noSaveCard, pageHead, saveKey, signed, skillName, stat } from './shared.js';
+import { bestFightFor, secs, styleOptions } from './combat.js';
+import { card, gatherStep, itemLink, later, memo, methodLink, noSaveCard, pageHead, saveKey, signed, skillName, stat } from './shared.js';
+import { toolUpgradeNote } from './toolbelt-ui.js';
 
 export const STOCK_HOURS = [1, 2, 4, 8, 12];
 
@@ -88,21 +89,26 @@ function activityCard(ctx) {
   }
   const r = a.rates;
   let verdict;
+  // Both sides count the time to get an hour's materials (a.own and the bests' own rates do).
+  const own = a.own ?? r;
+  const counting = (x) => (x?.materialHours >= 0.05 || Math.abs(own.xpPerHour - r.xpPerHour) > 1 ? ', counting the time to get materials' : '');
   if (a.xpRatio >= 0.98) {
-    verdict = `<div class="verdict good"><strong>Fastest XP available at your level.</strong>Nothing you've unlocked in ${esc(skillName(ctx, a.skill))} trains faster.</div>`;
+    verdict = `<div class="verdict good"><strong>Fastest XP you can keep going at your level.</strong>Nothing you've unlocked in ${esc(skillName(ctx, a.skill))} trains faster with materials you have or can get.</div>`;
   } else {
     const b = a.bestXp;
-    verdict = `<div class="verdict warn"><strong>${esc(b.method.name)} gives ${pct(1 / a.xpRatio - 1)} more XP.</strong>${num(b.rates.xpPerHour)} XP/h vs your ${num(r.xpPerHour)} XP/h. <a href="#/skills/${a.skill}">Compare all</a></div>`;
+    const bXp = b.xpPerHour ?? b.rates.xpPerHour;
+    verdict = `<div class="verdict warn"><strong>${esc(b.method.name)} gives ${pct(1 / a.xpRatio - 1)} more XP.</strong>${num(bXp)} XP/h vs your ${num(own.xpPerHour)} XP/h${counting(b)}. <a href="#/skills/${a.skill}">Compare all</a></div>`;
   }
   const p = a.bestProfit;
-  const money = p && p.method.key !== a.method.key && p.rates.profitPerHour > r.profitPerHour * 1.02
-    ? `<p class="small">Best money in ${esc(skillName(ctx, a.skill))}: ${methodLink(p.method)} at ${gp(p.rates.profitPerHour)} GP/h (you: ${gp(r.profitPerHour)}).</p>`
+  const pGp = p ? p.profitPerHour ?? p.rates.profitPerHour : 0;
+  const money = p && p.method.key !== a.method.key && pGp > own.profitPerHour * 1.02 && pGp > 0
+    ? `<p class="small">Best money in ${esc(skillName(ctx, a.skill))}: ${methodLink(p.method)} at ${gp(pGp)} GP/h (you: ${gp(own.profitPerHour)})${counting(p)}.</p>`
     : '';
   const measured = ctx.measured[a.skill];
   const m = measured
     ? `<p class="small muted">Measured over your last ${duration(ctx.measuredMinutes / 60)} of play: <strong>${num(measured)} XP/h</strong> (${pct(measured / r.xpPerHour)} of the estimate${ctx.gd.playerBonuses ? ' with your bonuses' : ''}; anything not modelled shows up here).</p>`
     : '';
-  return card('Right now', `<p><strong>${esc(a.label)}</strong> · ${num(r.xpPerHour)} XP/h · ${signed(r.profitPerHour)} GP/h${r.successChance != null && r.successChance < 1 ? ` · ${pct(r.successChance)} success` : ''}</p>${verdict}${money}${m}${boosts(ctx)}`);
+  return card('Right now', `<p><strong>${esc(a.label)}</strong> · ${num(r.xpPerHour)} XP/h · ${signed(r.profitPerHour)} GP/h${r.successChance != null && r.successChance < 1 ? ` · ${pct(r.successChance)} success` : ''}</p>${verdict}${money}${m}${toolUpgradeNote(ctx, a.skill) ? `<p>${toolUpgradeNote(ctx, a.skill)}</p>` : ''}${boosts(ctx)}`);
 }
 
 // What the current action uses up and how long your stock lasts.
@@ -116,6 +122,41 @@ function suppliesCard(ctx) {
   return card('Supplies', rows.length ? `<ul class="list-plain">${rows.join('')}</ul><p class="small muted" style="margin-top:8px">${basis} <a href="#/settings">Alerts</a></p>${stockUpPart(ctx, list)}` : '<p class="muted small">Nothing being used up right now.</p>');
 }
 
+// Combat skills whose cards show your best fight, and what that depends on: your combat levels, which
+// gear, food, ammo and runes you have, and whether bonuses are counted. Not every autosave (eating
+// food or firing arrows doesn't change the answer), so it's worked out again only when one of those does.
+const FIGHT_SKILLS = ['Attack', 'Strength', 'Defence', 'Hitpoints', 'Ranged', 'Magic'];
+const runeIds = new WeakMap();
+function fightKey(ctx) {
+  const { gd } = ctx;
+  if (!runeIds.has(gd)) runeIds.set(gd, new Set([...(gd.combat?.spells ?? []), ...(gd.combat?.imbuements ?? [])].flatMap((s) => s.runes.map((r) => r.item))));
+  const runes = runeIds.get(gd);
+  const bank = ctx.bank ?? {};
+  const stock = ctx.stock ?? {};
+  const has = Object.keys(stock).filter((id) => stock[id] > 0 && (gd.items[id]?.equip || gd.items[id]?.heal)).concat(Object.keys(bank).filter((id) => bank[id] > 0 && runes.has(id)));
+  const levels = ['Attack', 'Strength', 'Defence', 'Hitpoints', 'Ranged', 'Magic', 'Prayer', 'Slayer'].map((s) => ctx.levels[s] ?? 1).join(',');
+  return `${ctx.save?.id}|${ctx.state.levelSource}|${ctx.state.useBonuses}|${levels}|${ctx.save?.combat?.food ?? ''}|${ctx.save?.combat?.imbuement ?? ''}|${[...new Set(has)].sort().join(',')}`;
+}
+
+// Works out the best fight for each combat skill in the background (Home calls it), so the skill cards
+// have it ready.
+// One skill at a time, when the browser is idle, so Home stays quick to scroll and click while it runs.
+let warming = null;
+export function warmBestFights(ctx) {
+  if (!ctx.save?.combat || typeof requestIdleCallback !== 'function') return;
+  const key = fightKey(ctx);
+  if (warming === key) return;
+  warming = key;
+  const todo = [...FIGHT_SKILLS];
+  const next = () => {
+    const skill = todo.shift();
+    if (warming !== key || !skill) return;
+    later(`best-fight|${skill}`, key, () => bestFightFor(ctx, skill), { quiet: true });
+    requestIdleCallback(next, { timeout: 5000 });
+  };
+  requestIdleCallback(next, { timeout: 5000 });
+}
+
 function skillCard(ctx, s) {
   const { gd } = ctx;
   const level = ctx.levels[s.id] ?? 1;
@@ -125,9 +166,10 @@ function skillCard(ctx, s) {
   let lines = '';
   if (trainable) {
     const ranked = rankSkill(gd, s.id, ctx.levels);
-    const best = ranked.best;
+    // The best you can keep doing, counting the time to get its materials (not a one-off recipe).
+    const best = bestSustained(gd, ranked, memo('overview:producers', saveKey(ctx), () => producerIndex(gd, ctx.levels)), ctx.stock) ?? ranked.best;
     const next = ranked.upcoming[0];
-    if (best) lines += `<div class="line">Best: ${esc(best.method.name)} · ${num(best.rates.xpPerHour)} XP/h</div>`;
+    if (best) lines += `<div class="line">Best: ${esc(best.method.name)} · ${num(best.xpPerHour ?? best.rates.xpPerHour)} XP/h${best.materialHours >= 0.05 ? ' <span class="muted">counting materials</span>' : ''}</div>`;
     lines += next ? `<div class="line">Next: ${esc(next.method.name)} at ${next.method.level}</div>` : '<div class="line">Everything unlocked</div>';
   } else {
     // No rate model: point combat skills at their pages, and show the next unlock for the rest.
@@ -135,7 +177,11 @@ function skillCard(ctx, s) {
     const nextUnlock = (gd.raw.unlocks?.[s.id] ?? []).find((u) => u.level > level);
     const measured = ctx.measured?.[s.id];
     if (measured) lines += `<div class="line">Measured: ${num(measured)} XP/h</div>`;
+    // The best fight for each combat skill takes a moment: worked out after the page first shows.
+    const f = FIGHT_SKILLS.includes(s.id) && ctx.save?.combat ? later(`best-fight|${s.id}`, fightKey(ctx), () => bestFightFor(ctx, s.id)) : null;
     if (s.id === 'Prayer') lines += '<div class="line">Trained by fighting with a prayer on (see Combat)</div>';
+    else if (f === undefined) lines += '<div class="line muted">Working out your best fight…</div>';
+    else if (f) lines += `<div class="line">Best: ${esc(f.enemy.name)} · ${num(f.xp)} XP/h${f.stance ? ` (${esc(f.stance)})` : ''}</div>`;
     else if (combatPage) lines += `<div class="line">See the ${combatPage} page for what to fight</div>`;
     else if (nextUnlock) lines += `<div class="line">Next: ${esc(nextUnlock.name)} at ${nextUnlock.level}</div>`;
     else if (!measured) lines += '<div class="line">Rates for this skill aren\'t modelled yet</div>';
@@ -150,7 +196,8 @@ function skillCard(ctx, s) {
   </a>`;
 }
 
-export function overview(ctx) {
+// The top of Home: your character, while you were away, totals, what you're doing and your supplies.
+export function overviewTop(ctx) {
   const { gd, save, state } = ctx;
   let html = '';
   if (save && state.levelSource === 'save') {
@@ -163,10 +210,12 @@ export function overview(ctx) {
     if (save.warnings.length) html += `<p class="notice warn">${save.warnings.map(esc).join('<br>')}</p>`;
     html += `<div class="grid two" style="margin-top:12px;align-items:start">${activityCard(ctx)}${suppliesCard(ctx)}</div>`;
   } else if (state.levelSource === 'manual') {
-    html += pageHead('Overview', 'Using the levels you entered in Settings.');
+    html += pageHead('Home', 'Using the levels you entered in Settings.');
   } else {
-    html += pageHead('Overview') + noSaveCard(ctx);
+    html += pageHead('Home') + noSaveCard(ctx);
   }
-  html += `<h2>Skills</h2><div class="grid skills">${gd.skills.map((s) => skillCard(ctx, s)).join('')}</div>`;
   return html;
 }
+
+// Every skill's level, progress and best method, as cards.
+export const skillGrid = (ctx) => `<div class="grid skills">${ctx.gd.skills.map((s) => skillCard(ctx, s)).join('')}</div>`;

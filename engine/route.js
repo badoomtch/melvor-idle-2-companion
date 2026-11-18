@@ -9,6 +9,7 @@
 // in the game stays first until it's done, and an earlier route's choices (`prefer`) keep winning unless
 // something is clearly better, so the route doesn't change under you with every autosave. Isomorphic.
 import { KEEP, MATERIAL_DEPTH, obtain, planRates, planTraining, producerIndex, SWITCH_HOURS } from './advisor.js';
+import { fightMethod } from './fight-method.js';
 import { computeRates } from './rates.js';
 import { baselineProfit, levelLockedShop, unlockValue } from './route-goals.js';
 
@@ -71,7 +72,10 @@ const firstMethod = (plan) => {
  *   `lasts` is how long the stock at that point keeps the step going (Infinity when it uses nothing,
  *   null without a bank).
  */
-export function planRoute(gd, { levels, xp = {}, bank = null, current = null, prefer = null, extras = [], purchased = {}, bankItems = null, legs: maxLegs = 5, hours: horizon = 6 }) {
+export function planRoute(gd, { levels, xp = {}, bank = null, current = null, prefer = null, extras = [], purchased = {}, bankItems = null, legs: maxLegs = 5, hours: horizon = 6, targets = [] }) {
+  // Your own goals (the Goals page): a skill with a target level you haven't reached goes first, all the
+  // way to your target.
+  const targetFor = (skill, level) => targets.filter((t) => t.skill === skill && t.target > level).reduce((min, t) => Math.min(min, t.target), Infinity);
   const keepGoals = new Set(prefer?.goals ?? []);
   const keepMethods = new Set(prefer?.methods ?? []);
   // Without a bank it assumes you have whatever materials it needs.
@@ -97,18 +101,29 @@ export function planRoute(gd, { levels, xp = {}, bank = null, current = null, pr
       if (!c || !(c.hours >= 0) || !Number.isFinite(c.hours)) return;
       c.doing = !route.length && !!current && c.uses(current);
       c.score = (c.value / Math.max(c.hours + (c.first === last ? 0 : SWITCH_HOURS), 1 / 120)) * (keepGoals.has(c.id) ? 1 / (KEEP * KEEP) : 1);
-      if (!best || (c.doing && !best.doing) || (c.doing === best.doing && c.score > best.score)) best = c;
+      // What you're doing now, then your own goals, then the rest by worth per hour.
+      const rank = (x) => [x.doing ? 1 : 0, x.yours ? 1 : 0, x.score];
+      const [a, b] = [rank(c), best && rank(best)];
+      if (!best || a[0] > b[0] || (a[0] === b[0] && (a[1] > b[1] || (a[1] === b[1] && a[2] > b[2])))) best = c;
     };
     for (const skill of gd.trainableSkills) {
       const level = gd.levelOf(sim.levels, skill);
       if (level >= gd.levelCap) continue;
       if (!plans.has(skill)) {
-        const goal = nextGoal(gd, skill, level);
+        let goal = nextGoal(gd, skill, level);
+        // Your goal: all the way to your target in one go, with what unlocks on the way.
+        const mine = targetFor(skill, level);
+        if (Number.isFinite(mine)) goal = { skill, to: mine, unlocks: (gd.methodsBySkill[skill] ?? []).filter((m) => m.level > level && m.level <= mine) };
         const plan = goal && planTraining(gd, skill, sim.levels, sim.xp[skill], goal.to, { bank: sim.stock, index, current: last, prefer: keepMethods });
         plans.set(skill, goal && !plan.blocked ? { ...goal, ...unlockValue(gd, skill, sim.levels, goal.to, worth), from: level, plan, deps: depsOf(skill, plan) } : null);
       }
       const c = plans.get(skill);
-      if (c) consider({ ...c, kind: 'unlock', id: `${skill}|${c.to}`, hours: c.plan.hours, first: firstMethod(c.plan), uses: (key) => planUses(c.plan, key) });
+      if (c) {
+        const mine = targetFor(skill, level);
+        const yours = Number.isFinite(mine);
+        consider({ ...c, kind: 'unlock', id: `${skill}|${c.to}`, hours: c.plan.hours, first: firstMethod(c.plan), uses: (key) => planUses(c.plan, key), yours,
+          reasons: yours ? [{ kind: 'goal', gain: 1, text: `Your goal: ${gd.skillName(skill)} ${mine}` }, ...(c.reasons ?? [])] : c.reasons });
+      }
     }
     for (const x of extras) if (!used.has(x.id)) consider(extraCandidate(gd, sim, x, { index, last, prefer: keepMethods }));
     if (!best) break;
@@ -120,10 +135,11 @@ export function planRoute(gd, { levels, xp = {}, bank = null, current = null, pr
     const touched = { xp: new Set(), items: new Set() };
     const steps = play(gd, sim, best, clock, touched, index);
     const hours = steps.reduce((s, st) => s + st.hours, 0);
-    const goal = { kind: best.kind, id: best.id, skill: best.skill, from: best.from, to: best.to ?? gd.levelOf(sim.levels, best.skill), unlocks: best.unlocks ?? [], label: best.label ?? null, item: best.item ?? null, reasons: best.reasons ?? [], hours, at: clock, steps, doing: best.doing };
+    const goal = { kind: best.kind, id: best.id, skill: best.skill, from: best.from, to: best.to ?? gd.levelOf(sim.levels, best.skill), unlocks: best.unlocks ?? [], label: best.label ?? null, item: best.item ?? null, toolbelt: best.toolbelt ?? null, itemSource: best.itemSource ?? null, gp: best.gp ?? null, yours: !!best.yours, reasons: best.reasons ?? [], hours, at: clock, steps, doing: best.doing };
     route.push(goal);
     if (sameLeg) {
       leg.to = goal.to;
+      leg.yours ||= goal.yours;
       leg.unlocks.push(...goal.unlocks);
       leg.reasons = strongest([...leg.reasons, ...goal.reasons]);
       leg.hours += hours;
@@ -189,7 +205,7 @@ function settle(gd, legs, start) {
       }
       // What it makes, margin included, and what you'll have of it after.
       if (st.item) {
-        st.qty = each(rates.outputs.find((o) => o.item === st.item)?.perHour ?? 0);
+        st.qty = Math.min(each(rates.outputs.find((o) => o.item === st.item)?.perHour ?? 0), st.want ?? Infinity);
         st.target = stock.get(st.item) ?? 0;
       }
     }
@@ -342,6 +358,17 @@ function extraCandidate(gd, sim, x, { index, last, prefer }) {
       first: plan ? firstMethod(plan) : chain[0]?.method?.key ?? x.method,
       uses: (key) => (plan && planUses(plan, key)) || chain.some((n) => n.method?.key === key) || key === x.method };
   }
+  if (x.kind === 'combat') {
+    // Fight to the level, then wear it: what you own or buy, or make it (gathering what you're short of).
+    const m = fightMethod(gd, x.fight);
+    const rates = planRates(gd, m, level);
+    if (!(rates.xpPerHour > 0)) return null;
+    const xpNeed = Math.max(0, gd.xp.xpForLevel(x.to) - (sim.xp[x.skill] ?? gd.xp.xpForLevel(level)));
+    const make = x.itemSource === 'make' && sim.stock ? obtain(index, sim.stock, x.item, 1, MATERIAL_DEPTH, prefer) : null;
+    if (make && !Number.isFinite(make.hours)) return null;
+    const chain = make ? [...make.needs, make] : [];
+    return { ...x, from: level, label: null, hours: xpNeed / rates.xpPerHour + (make?.hours ?? 0), first: m.key, uses: (key) => key === m.key || chain.some((n) => n.method?.key === key) };
+  }
   if (x.kind === 'mastery') {
     if (x.tasks.some((t) => !gd.methodByKey.get(t.method))) return null;
     return { ...x, from: level, to: level, label: x.rank, hours: x.tasks.reduce((s, t) => s + t.hours, 0), first: x.tasks[0]?.method, uses: (key) => x.tasks.some((t) => t.method === key) };
@@ -383,11 +410,22 @@ function play(gd, sim, goal, clock, touched, index) {
     }
     run('train', st.method, st.actions, { xp: st.xp, hours: st.hours, toLevel: st.toLevel, limitedBy: st.limitedBy ?? null });
   }
-  if (goal.kind === 'gear') {
+  if (goal.kind === 'combat') {
+    // Fight until the level, then get the gear (make it here; what you own or buy needs no step).
+    const m = fightMethod(gd, goal.fight);
+    const level = gd.levelOf(sim.levels, goal.skill);
+    const xpNeed = gd.xp.xpForLevel(goal.to) - (sim.xp[goal.skill] ?? gd.xp.xpForLevel(level));
+    if (xpNeed > 0) {
+      const rates = planRates(gd, m, level);
+      run('train', m, Math.ceil(xpNeed / (rates.xpPerHour / rates.cyclesPerHour) - 1e-9), { toLevel: goal.to });
+    }
+  }
+  if (goal.kind === 'gear' || (goal.kind === 'combat' && goal.itemSource === 'make')) {
     // Then make it: from the bank, gathering anything it's short of first.
     const make = sim.stock ? obtain(index, sim.stock, goal.item, 1) : { item: goal.item, short: 1, method: gd.methodByKey.get(goal.method), makes: true, actions: 1, needs: [] };
     for (const n of [...make.needs, { ...make, qty: make.short }]) {
-      if (n.method && n.actions) run(n.makes ? 'make' : 'gather', n.method, n.actions, { item: n.item, qty: n.qty });
+      // The gear itself: one, even when doubling makes a few more likely.
+      if (n.method && n.actions) run(n.makes ? 'make' : 'gather', n.method, n.actions, { item: n.item, qty: n.qty, ...(n.item === goal.item ? { want: 1 } : {}) });
     }
   }
   if (goal.kind === 'mastery') {

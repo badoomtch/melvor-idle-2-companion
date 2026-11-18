@@ -6,6 +6,7 @@
 import { hoursToLevel, obtain } from './advisor.js';
 import { buildEnemy, scoreGear, weaponStyles, xpOf } from './combat.js';
 import { GP, purchaseStatus } from './gamedata.js';
+import { idleDanger } from './idle-danger.js';
 import { upgradeNeeds } from './item-upgrades.js';
 import { itemDetails, triesFor } from './lookup.js';
 import { computeRates } from './rates.js';
@@ -28,10 +29,11 @@ const missingLevels = (gd, requires, levels) => (requires ?? []).filter((r) => r
  * @param xp { skill: current XP } for timing levels; combatXp { skill: best XP/h fighting }
  * @param itemUpgrades also count upgrades in the bank (source type 'upgrade': { upgrade, times, hours,
  *   gather }); off until the page shows them
+ * @param includeOwned also gear you own but can't wear yet (source type 'own'): always "a few levels away"
  * @returns { ready: rows you can get now, soon: rows a few levels away }; each row: { item, slot, replaces,
- *   gain, gainShare, source: { type: 'make'|'buy'|'drop'|'upgrade', hours, ... }, needs: [{ skill, level, hours }], levelHours }
+ *   gain, gainShare, source: { type: 'make'|'buy'|'drop'|'upgrade'|'own', hours, ... }, needs: [{ skill, level, hours }], levelHours }
  */
-export function gearUpgrades(gd, { rec, owned, levels, bank = {}, food = null, skill = null, index, purchased = {}, wallet = null, xp = {}, combatXp = null, itemUpgrades = false }) {
+export function gearUpgrades(gd, { rec, owned, levels, bank = {}, food = null, skill = null, index, purchased = {}, wallet = null, xp = {}, combatXp = null, itemUpgrades = false, includeOwned = false }) {
   const g = rec?.gear;
   if (!g?.enemy) return { ready: [], soon: [] };
   const style = rec.style;
@@ -52,10 +54,13 @@ export function gearUpgrades(gd, { rec, owned, levels, bank = {}, food = null, s
   const rows = [];
   for (const [id, item] of Object.entries(gd.items)) {
     const eq = item.equip;
-    if (!eq || (owned.get(id) ?? 0) > 0) continue;
+    const have = (owned.get(id) ?? 0) > 0;
+    if (!eq || (have && !includeOwned)) continue;
     if (eq.type === 'Weapon' && !weaponStyles(gd, id).includes(style)) continue;
     // Too far off to be worth listing.
     const wear = missingLevels(gd, eq.requires, levels);
+    // What you own and can wear is already in the gear above.
+    if (have && !wear.length) continue;
     if (wear.some((r) => r.level - gd.levelOf(levels, r.skill) > MAX_LEVELS_AWAY)) continue;
 
     // Its best slot, swapped into the recommended gear (ammo: the best you'd have, with it added).
@@ -78,43 +83,56 @@ export function gearUpgrades(gd, { rec, owned, levels, bank = {}, food = null, s
 
     // How to get it. Ammo is timed for an hour's worth.
     const qty = eq.type === 'Ammo' ? Math.max(1, Math.ceil(best.result.ammoPerHour ?? 1)) : 1;
-    const sources = [];
-    const needs = [...wear];
-    for (const source of itemDetails(gd, id).sources) {
-      if (source.type === 'method') {
-        const m = source.method;
-        const req = gd.checkRequirements(m, levels);
-        if (req.unknown.length || req.missing.some((r) => r.type !== 'level')) continue;
-        const short = req.missing.filter((r) => r.type === 'level');
-        if (short.length) {
-          sources.push({ type: 'make', method: m, needs: short });
-          continue;
-        }
-        sources.push({ type: 'make', method: m });
-      } else if (source.type === 'shop') {
-        const p = source.purchase;
-        if (!purchaseStatus(gd, p, levels, purchased).ok || p.costs.items.length || p.costs.currencies.some((c) => c.currency !== GP)) continue;
-        const each = p.costs.currencies.reduce((s, c) => s + c.qty, 0) / (p.provides.items.find((i) => i.item === id)?.qty ?? 1);
-        sources.push({ type: 'buy', purchase: p, gp: each * qty, hours: 0, afford: !wallet || (wallet[GP] ?? 0) >= each * qty });
-      } else if (source.type === 'enemy') {
-        const f = fightsByEnemy.get(source.enemy.id);
-        if (!f) continue;
-        const kills = triesFor(source.chance, 0.5);
-        sources.push({ type: 'drop', enemy: source.enemy, chance: source.chance, kills, hours: kills / f.result.killsPerHour });
-      } else if (source.type === 'upgrade' && itemUpgrades) {
-        // Ammo upgrades make a stack at a time (250 arrows), so only as many as an hour's worth needs.
-        const u = source.upgrade;
-        const req = gd.checkRequirements({ skill: null, level: 0, requires: u.requires }, levels);
-        if (req.unknown.length || req.missing.some((r) => r.type !== 'level')) continue;
-        const short = req.missing.filter((r) => r.type === 'level');
-        sources.push({ type: 'upgrade', upgrade: u, times: Math.ceil(qty / u.qty), ...(short.length ? { needs: short } : {}) });
-      }
-    }
+    const sources = have ? [{ type: 'own', hours: 0 }] : upgradeSources(gd, id, qty, { levels, purchased, wallet, fightsByEnemy, itemUpgrades });
     rows.push({ item: id, slot: best.slot, replaces: g.slots[best.slot] ?? null, gain: best.gain, gainShare: best.gain / base, damageCut: best.damageCut, worth: best.worth, qty, sources, wear,
       why: { enemy: g.enemy.name, before: fightNumbers(g.result), after: fightNumbers(best.result) } });
   }
   return finish(gd, rows, { levels, stock, index, timeTo, wallet });
 }
+
+/**
+ * The ways to get `qty` of an item: make it (now, or with `needs` levels first), buy it for gold, get
+ * it as a drop from a fight you can do (`fightsByEnemy`: enemy id -> rankFights() row), or upgrade
+ * something (with `itemUpgrades`). Shared by combat gear and toolbelt items.
+ */
+export function upgradeSources(gd, id, qty, { levels, purchased = {}, wallet = null, fightsByEnemy = null, itemUpgrades = false }) {
+  const sources = [];
+  for (const source of itemDetails(gd, id).sources) {
+    if (source.type === 'method') {
+      const m = source.method;
+      const req = gd.checkRequirements(m, levels);
+      if (req.unknown.length || req.missing.some((r) => r.type !== 'level')) continue;
+      const short = req.missing.filter((r) => r.type === 'level');
+      // Not a pickpocket that can kill you while it runs (at your Hitpoints now, and its level if that's higher).
+      if (idleDanger(gd, computeRates(gd, m, Math.max(gd.levelOf(levels, m.skill), m.level)))?.risky) continue;
+      sources.push(short.length ? { type: 'make', method: m, needs: short } : { type: 'make', method: m });
+    } else if (source.type === 'shop') {
+      const p = source.purchase;
+      if (!purchaseStatus(gd, p, levels, purchased).ok || p.costs.items.length || p.costs.currencies.some((c) => c.currency !== GP)) continue;
+      const each = p.costs.currencies.reduce((s, c) => s + c.qty, 0) / (p.provides.items.find((i) => i.item === id)?.qty ?? 1);
+      sources.push({ type: 'buy', purchase: p, gp: each * qty, hours: 0, afford: !wallet || (wallet[GP] ?? 0) >= each * qty });
+    } else if (source.type === 'enemy') {
+      const f = fightsByEnemy?.get(source.enemy.id);
+      if (!f) continue;
+      const kills = triesFor(source.chance, 0.5);
+      sources.push({ type: 'drop', enemy: source.enemy, chance: source.chance, kills, hours: kills / f.result.killsPerHour });
+    } else if (source.type === 'upgrade' && itemUpgrades) {
+      // Ammo upgrades make a stack at a time (250 arrows), so only as many as an hour's worth needs.
+      const u = source.upgrade;
+      const req = gd.checkRequirements({ skill: null, level: 0, requires: u.requires }, levels);
+      if (req.unknown.length || req.missing.some((r) => r.type !== 'level')) continue;
+      const short = req.missing.filter((r) => r.type === 'level');
+      sources.push({ type: 'upgrade', upgrade: u, times: Math.ceil(qty / u.qty), ...(short.length ? { needs: short } : {}) });
+    }
+  }
+  return sources;
+}
+
+/**
+ * Times rows ({ item, qty, sources, wear, worth }) and splits them into "get it now" and "a few levels
+ * away", as gearUpgrades does. `timeTo(skill, level)` gives the hours to a level.
+ */
+export const timeUpgrades = (gd, rows, opts) => finish(gd, rows, opts);
 
 // Times each source and splits the rows into "get it now" and "a few levels away".
 function finish(gd, rows, { levels, stock, index, timeTo, wallet }) {
@@ -134,7 +152,7 @@ function finish(gd, rows, { levels, stock, index, timeTo, wallet }) {
       } else if (s.type === 'make' || s.type === 'upgrade') {
         const levelsAway = s.needs.reduce((sum, r) => sum + r.level - gd.levelOf(levels, r.skill), 0);
         if (s.needs.every((r) => r.level - gd.levelOf(levels, r.skill) <= MAX_LEVELS_AWAY) && (!later || levelsAway < later.levelsAway)) later = { ...s, levelsAway };
-      } else if ((s.type === 'buy' && s.afford) || s.type === 'drop') {
+      } else if ((s.type === 'buy' && s.afford) || s.type === 'drop' || s.type === 'own') {
         if (!now || s.hours < now.hours) now = s;
       }
     }

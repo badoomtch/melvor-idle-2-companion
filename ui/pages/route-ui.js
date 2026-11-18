@@ -9,6 +9,7 @@ import { toolbeltForStep } from '/engine/toolbelt-advice.js';
 import { ago, badge, duration, esc, exact, pct } from '/ui/format.js';
 import { masteryPlanFor } from './mastery-ui.js';
 import { card, huntingTodoNote, itemLink, memo, methodLink, saveKey, skillName } from './shared.js';
+import { toolUpgradeNote } from './toolbelt-ui.js';
 
 // The method you're doing in the game (null when idle, fighting or not reading a save).
 export const currentMethodKey = (ctx) => (ctx.save && ctx.state.levelSource === 'save' ? currentActivity(ctx.gd, ctx.save.header, ctx.levels)?.method?.key ?? null : null);
@@ -63,19 +64,34 @@ function masteryTasks(ctx, key) {
   return plans.flatMap((p) => p.open.filter((t) => t.hours != null && t.how?.method?.key === key)).sort((a, b) => a.hours - b.hours).slice(0, 1);
 }
 
+// Whether a gear goal crafts its item ("Make"), or steals, catches or finds it ("Get").
+const madeHere = (leg) => ['artisan', 'cooking', 'firemaking'].includes(leg.steps.find((st) => st.item === leg.item)?.method.kind ?? 'artisan');
+
 // What a goal is, in its heading: the level an unlock is at, the gear to make, the Mastery rank to earn.
 function goalTitle(ctx, leg) {
   const skill = `<a href="#/skills/${leg.skill}">${esc(skillName(ctx, leg.skill))}</a>`;
-  if (leg.kind === 'gear') return `Make ${itemLink(ctx, leg.item)}`;
+  if (leg.kind === 'gear') return `${madeHere(leg) ? 'Make' : 'Get'} ${itemLink(ctx, leg.item)}`;
   if (leg.kind === 'mastery') return `${skill} Mastery: ${esc(leg.label)}`;
+  if (leg.kind === 'combat') return `${skill} ${leg.from} → ${leg.to}${leg.item ? ` <span class="muted small">to wear ${itemLink(ctx, leg.item)}</span>` : ''}`;
   return `${skill} ${leg.from} → ${leg.to}`;
 }
 
 // What it gets you: what an unlock unlocks, or the levels a piece of gear needs first.
 function goalWhat(ctx, leg) {
-  if (leg.kind === 'gear') return leg.to > leg.from ? `Gets ${esc(skillName(ctx, leg.skill))} to ${leg.to} first, then makes it. Equip it once it's made.` : "You can make it now. Equip it once it's made.";
+  if (leg.kind === 'gear') {
+    const then = leg.toolbelt ? `Put it in your ${esc(skillName(ctx, leg.toolbelt))} toolbelt once you have it.` : "Equip it once you have it.";
+    const verb = madeHere(leg) ? 'make' : 'get';
+    return leg.to > leg.from ? `Gets ${esc(skillName(ctx, leg.skill))} to ${leg.to} first, then ${verb}s it. ${then}` : `You can ${verb} it now. ${then}`;
+  }
   if (leg.kind === 'mastery') return 'Its tasks, done the quickest way: they count whenever you do these actions.';
-  return `Unlocks ${unlockText(leg)}`;
+  if (leg.kind === 'combat') {
+    if (!leg.item) return `Fight until ${esc(skillName(ctx, leg.skill))} ${leg.to}, the level you set on the <a href="#/goals">Goals</a> page.`;
+    const item = itemLink(ctx, leg.item);
+    const then = leg.itemSource === 'own' ? `then wear your ${item}` : leg.itemSource === 'buy' ? `then buy ${item}${leg.gp ? ` for ${exact(Math.ceil(leg.gp))} GP` : ''} and wear it` : `then make ${item} and wear it`;
+    return `Fight until ${esc(skillName(ctx, leg.skill))} ${leg.to}, ${then}.`;
+  }
+  if (!leg.unlocks.length) return `Trains to the level you set on the <a href="#/goals">Goals</a> page.`;
+  return `Unlocks ${unlockText(leg)}${leg.yours ? ', on the way to your goal' : ''}`;
 }
 
 const unlockText = (leg) => {
@@ -83,6 +99,12 @@ const unlockText = (leg) => {
   const shown = names.slice(0, 4).map(esc).join(', ');
   return names.length > 4 ? `<span title="${esc(names.join(', '))}">${shown} and ${names.length - 4} more</span>` : shown;
 };
+
+// How to set up a fight step: the style, the stance, and where.
+function fightNote(ctx, m) {
+  const area = m.area && ctx.gd.areaById.get(m.area);
+  return `${esc(m.style)}${m.stance ? `, ${esc(m.stance)} stance` : ''}${area ? ` in ${esc(area.name)}` : ''}. Your best gear for it is on the <a href="#/combat">Combat</a> page.`;
+}
 
 // Done or not, read from your save: nothing to tick.
 const tick = (st) => `<span class="route-tick" aria-hidden="true">${st.done ? '✓' : ''}</span>`;
@@ -160,6 +182,7 @@ function stepItem(ctx, leg, st, now, tools = '') {
   if (progress) notes.push(progress);
   if (st.topUp) notes.push('added because you have less than the plan expected');
   if (st.extra > 0) notes.push(`${exact(Math.ceil(st.extra))} more than planned, because you have less than the plan expected`);
+  if (st.method.kind === 'fight') notes.push(fightNote(ctx, st.method));
   const short = shortNote(ctx, st);
   const side = st.levelUps.filter((u) => st.kind !== 'train' || u.skill !== leg.skill);
   if (side.length) notes.push(`also gets you ${side.map((u) => `${esc(skillName(ctx, u.skill))} ${u.level}`).join(', ')}`);
@@ -184,22 +207,25 @@ function spaceNote(ctx, route) {
 export function routeCard(ctx) {
   const route = routeFor(ctx);
   const locked = route.kept;
-  const intro = `<p class="small muted">Your next unlocks, gear worth making and Mastery ranks, in the order that pays off most. ${locked ? 'Steps tick off from your saves as you play, and you get a new plan when this one is done or you run out of something it needs.' : ctx.save ? 'Restart the companion to keep this plan between autosaves and tick steps off as you go.' : 'No save loaded, so it assumes you have the materials.'}</p>`;
-  const replan = locked ? `<span class="route-made muted small">Planned ${esc(ago(route.madeAt))} · <button class="link" data-action="replan">Make a new plan</button></span>` : '';
+  const intro = `<p class="small muted">Your next unlocks, gear and toolbelt items worth getting, combat levels and Mastery ranks, in the order that pays off most. ${locked ? 'Steps tick off from your saves as you play, and you get a new plan when this one is done or you run out of something it needs.' : ctx.save ? 'Restart the companion to keep this plan between autosaves and tick steps off as you go.' : 'No save loaded, so it assumes you have the materials.'}</p>`;
+  // A new plan takes a few seconds: the one you have stays until it's ready.
+  const replan = !locked ? '' : ctx.state.planMaking
+    ? `<span class="route-made muted small">Planned ${esc(ago(route.madeAt))} · <strong>Making a new plan…</strong></span>`
+    : `<span class="route-made muted small">Planned ${esc(ago(route.madeAt))} · <button class="link" data-action="replan">Make a new plan</button></span>`;
   const title = `Your plan <span class="muted small">· ${route.legs.filter((l) => !l.done).length} goals, ${duration(route.hours)} left</span>`;
   if (!route.legs.length || route.finished) return card(title, `${intro}<p class="muted">Nothing left to unlock that the companion can plan.</p>${replan}`);
   const why = route.why?.ranOut
     ? `<p class="notice">New plan: you ran out of ${esc(ctx.gd.itemName(route.why.ranOut))} and nothing in the old one made more.</p>`
     : route.why?.short
       ? `<p class="notice">New plan: the old one needed ${exact(route.why.need)} ${esc(ctx.gd.itemName(route.why.short))} and you had ${exact(route.why.have)}, so this one starts from your bank as it is now.</p>`
-      : route.why?.done ? '<p class="notice">New plan: you finished the last one.</p>' : '';
+      : route.why?.done ? '<p class="notice">New plan: you finished the last one.</p>' : route.why?.goals ? '<p class="notice">New plan: your goals changed, and they go first.</p>' : '';
   const now = route.step;
   // Only what's left: finished goals and steps drop off.
   const open = route.legs.filter((l) => !l.done);
   const goalOf = open.findIndex((l) => l.steps.includes(now));
   const nowTools = stepTools(ctx, now);
   const head = `<div class="route-now${now.on ? ' on' : ''}"><span><span class="route-label">${now.on ? "You're on it" : 'Do this now'}</span><strong>${stepLine(ctx, now)}</strong>
-    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${usesNote(ctx, now)}${shortNote(ctx, now)}${buyNote(ctx, now)}${huntingTodoNote(ctx, now.method)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
+    <span class="sub muted small">For goal ${goalOf + 1}: ${goalTitle(ctx, open[goalOf])}${progressNote(now) ? ` · ${progressNote(now)}` : ''}</span>${usesNote(ctx, now)}${shortNote(ctx, now)}${buyNote(ctx, now)}${huntingTodoNote(ctx, now.method)}${nowTools ? '' : toolUpgradeNote(ctx, now.method.skill)}${nowTools ? toolsLine(ctx, nowTools, now.left.hours) : ''}</span><span class="num">${duration(now.left.hours)}</span></div>`;
   const goals = open.map((leg, i) => {
     const left = leg.steps.filter((st) => !st.done);
     const gathers = left.filter((st) => st.kind === 'gather' || st.kind === 'make');
@@ -207,12 +233,17 @@ export function routeCard(ctx) {
     const doneCount = leg.steps.length - left.length;
     const tools = goalTools(ctx, [...gathers, ...trains]);
     const item = (st) => stepItem(ctx, leg, st, now, tools.get(st));
-    const list = gathers.length
-      ? `<li class="route-sub">${leg.kind === 'gear' && !trains.length ? 'Make it' : 'Stock up'}</li>${gathers.map(item).join('')}${trains.length ? `<li class="route-sub">Then train</li>${trains.map(item).join('')}` : ''}`
-      : trains.map(item).join('');
+    // In the order they're done: a fight for gear trains first and makes the gear after; anything else
+    // stocks up first.
+    const getIt = madeHere(leg) ? 'Make it' : 'Get it';
+    const list = !gathers.length
+      ? trains.map(item).join('')
+      : leg.kind === 'combat' && trains.length
+        ? `${trains.map(item).join('')}<li class="route-sub">Then make it</li>${gathers.map(item).join('')}`
+        : `<li class="route-sub">${(leg.kind === 'gear' || leg.kind === 'combat') && !trains.length ? getIt : 'Stock up'}</li>${gathers.map(item).join('')}${trains.length ? `<li class="route-sub">Then train</li>${trains.map(item).join('')}` : ''}`;
     return `<li class="route-goal${i === goalOf ? ' current' : ''}">
       <div class="route-goal-head"><span class="route-num" aria-label="Goal ${i + 1}">${i + 1}</span>
-        <span class="route-goal-title">${badge(leg.skill, skillName(ctx, leg.skill))} <strong>${goalTitle(ctx, leg)}</strong>
+        <span class="route-goal-title">${badge(leg.skill, skillName(ctx, leg.skill))} <strong>${goalTitle(ctx, leg)}</strong>${leg.yours ? ' <span class="pill accent">Your goal</span>' : ''}
           <span class="sub small">${goalWhat(ctx, leg)}</span>${leg.reasons?.length ? `<span class="sub small accent-text">Why: ${leg.reasons.map(esc).join(' · ')}</span>` : ''}</span>
         <span class="num">${duration(leg.hours)}<span class="sub muted small">${exact(doneCount)} of ${exact(leg.steps.length)} steps done</span></span></div>
       <ul class="route-steps">${list}</ul></li>`;

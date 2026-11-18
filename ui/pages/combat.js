@@ -66,7 +66,7 @@ function cachedRecommendation(ctx, key, compute) {
   const full = `${ctx.save?.header.timestamp}|${ctx.state.levelSource}|${key}`;
   if (!combatCache.has(full)) {
     combatCache.set(full, compute());
-    while (combatCache.size > 8) combatCache.delete(combatCache.keys().next().value);
+    while (combatCache.size > 16) combatCache.delete(combatCache.keys().next().value);
   }
   return combatCache.get(full);
 }
@@ -398,8 +398,9 @@ const MAKE_KINDS = new Set(['artisan', 'cooking', 'firemaking']);
 const verbFor = (m) => (MAKE_KINDS.has(m.kind) ? 'Make with' : m.kind === 'thieving' ? 'Steal from' : 'Get from');
 
 // How to get an upgrade: make it (and gather anything you're short of first), buy it, or the drop.
-function upgradeSource(ctx, row) {
+export function upgradeSource(ctx, row) {
   const s = row.source;
+  if (s.type === 'own') return 'You have it: wear it once you have the levels';
   if (s.type === 'buy') return `Buy for ${gp(s.gp)} GP`;
   if (s.type === 'drop') return `Drops from ${iconImg(s.enemy.icon, 'icon sm')}<a href="#/lookup/enemy/${enc(s.enemy.id)}">${esc(s.enemy.name)}</a> <span class="muted small">${pct(s.chance, s.chance < 0.01 ? 2 : 1)} · ~${exact(s.kills)} kills for 50%</span>`;
   const first = (s.gather ?? []).map((g) => [...g.needs, g].map((n) => gatherStep(ctx, n)).join(' → '));
@@ -435,7 +436,7 @@ function upgradesCard(ctx, rec, { skill, food }) {
   const { gd } = ctx;
   if (!rec.gear?.enemy) return '';
   const up = memo(`combat:upgrades|${rec.style}|${skill}|${food}|${rec.gear.enemy.id}`, saveKey(ctx), () =>
-    gearUpgrades(gd, { rec, owned: combatSetup(ctx).owned, levels: ctx.levels, bank: ctx.stock ?? {}, food, skill, index: producers(ctx), purchased: ctx.save.shopPurchases ?? {}, wallet: { GoldPieces: ctx.save.header.gp ?? 0 }, xp: ctx.xp ?? {}, combatXp: combatXpRates(ctx), itemUpgrades: true }));
+    gearUpgrades(gd, { rec, owned: combatSetup(ctx).owned, levels: ctx.levels, bank: ctx.stock ?? {}, food, skill, index: producers(ctx), purchased: ctx.save.shopPurchases ?? {}, wallet: { GoldPieces: ctx.save.header.gp ?? 0 }, xp: ctx.xp ?? {}, combatXp: combatXpRates(ctx), itemUpgrades: true, includeOwned: true }));
   const line = (row, extra = '') => `<li><span>${itemLink(ctx, row.item)} <span class="pill good">${esc(gainText(row))}</span>${extra}
       ${whyText(row)}<span class="sub small">${upgradeSource(ctx, row)}</span><span class="sub muted small">${esc(gd.combat.slots.find((s) => s.id === row.slot)?.name ?? row.slot)}: replaces ${row.replaces ? esc(gd.itemName(row.replaces)) : 'nothing'}</span></span>`;
   const ready = up.ready.slice(0, 8).map((row) => `${line(row)}<span class="num">${row.source.hours > 1 / 60 ? duration(row.source.hours) : 'Now'}</span></li>`);
@@ -596,4 +597,26 @@ function combatLoot(ctx) {
     return out;
   });
   return `<h2>Loot per kill</h2>${table(['Enemy', '#Level', '#Hitpoints', '#GP / kill', '#Loot / kill', 'Best drop'], rows)}`;
+}
+
+// Your quickest safe fight for one combat skill's XP: that skill's style with gear and stance picked for it
+// (Crush for Strength, Block for Defence), or for Hitpoints any style's pick. Worked out once per autosave.
+// Null without a save or a safe fight.
+const TRAIN_STYLES = { Attack: ['Melee'], Strength: ['Melee'], Defence: ['Melee'], Ranged: ['Ranged'], Magic: ['Magic'] };
+export function bestFightFor(ctx, skill) {
+  if (!ctx.gd.combat || !ctx.save?.combat || !ctx.bank) return null;
+  let best = null;
+  const take = (enemy, style, stance, result) => {
+    const xp = result.risky ? 0 : result.xpPerHour[skill] ?? 0;
+    if (xp > 0 && (!best || xp > best.xp)) best = { enemy, style, stance, xp };
+  };
+  if (TRAIN_STYLES[skill]) {
+    for (const style of TRAIN_STYLES[skill]) {
+      const g = combatRecommendation(ctx, style, { skill })?.gear;
+      if (g?.enemy) take(g.enemy, style, g.stance, g.result);
+    }
+  } else {
+    for (const style of STYLES) for (const f of combatRecommendation(ctx, style)?.fights ?? []) take(f.enemy, style, null, f.result);
+  }
+  return best;
 }

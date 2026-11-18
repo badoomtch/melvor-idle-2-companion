@@ -18,6 +18,7 @@ import { activityKey, measureFlows } from '../engine/supplies.js';
 import { createXpTable } from '../engine/xp.js';
 import { createAlertWatcher } from './alerts.js';
 import { createRouteWatcher } from './route-watcher.js';
+import { planWorker } from './plan-maker.js';
 import { createHistoryStore } from './history-store.js';
 import { createNotifier } from './notifier.js';
 import { createObservationStore } from './observations.js';
@@ -86,7 +87,11 @@ const finds = createFindLog({ gd: createGameData(data), dir: HISTORY_DIR });
 const notify = createNotifier();
 const alerts = createAlertWatcher({ gd: createGameData(data), dir: HISTORY_DIR, notify });
 // Plans use your own speed from what each action has really given you.
-const routes = createRouteWatcher({ gd: createGameData(data), dir: HISTORY_DIR, notify, settings: () => alerts.settings, actions: (id) => observations.peek(id) });
+// Plans are made in a worker thread, so the page and notifications carry on while one takes a few seconds;
+// the page hears when it's ready.
+const routeGd = createGameData(data);
+const routes = createRouteWatcher({ gd: routeGd, dir: HISTORY_DIR, notify, settings: () => alerts.settings, actions: (id) => observations.peek(id),
+  maker: planWorker(data, routeGd), onPlan: (id) => broadcast({ type: 'saves-changed', ids: [id] }) });
 // Whether GitHub has a newer release (package.json's repository, or MELVOR_COMPANION_REPO for a fork),
 // unless it's turned off in Settings.
 const updates = createUpdateCheck({ repo: process.env.MELVOR_COMPANION_REPO || repoFrom(pkg), current: appVersion, enabled: () => alerts.settings.checkUpdates !== false });
@@ -326,7 +331,7 @@ const server = createServer(async (req, res) => {
         return sendJson(res, alerts.settings);
       case '/api/route': {
         const id = url.searchParams.get('id') || mostRecentSaveId();
-        return sendJson(res, { id, plan: id ? routes.get(id) : null });
+        return sendJson(res, { id, plan: id ? routes.get(id) : null, making: id ? routes.making(id) : false });
       }
       case '/':
         return sendStatic(req, res, STATIC_ROOTS['/ui/'], 'index.html');
@@ -407,8 +412,10 @@ function handlePost(req, res, path) {
       }
       if (path === '/api/route/replan') {
         const { id } = JSON.parse(body || '{}');
-        const plan = typeof id === 'string' ? routes.replan(id) : null;
-        return plan ? sendJson(res, { id, plan }) : sendJson(res, { error: 'No save to plan from yet' }, 404);
+        // Made in the background: answered when it's ready, without holding anything else up.
+        return Promise.resolve(typeof id === 'string' ? routes.replan(id) : null)
+          .then((plan) => (plan ? sendJson(res, { id, plan }) : sendJson(res, { error: 'No save to plan from yet' }, 404)))
+          .catch((e) => sendJson(res, { error: e.message }, 500));
       }
       if (path !== '/api/alerts') return sendJson(res, { error: 'Not found' }, 404);
       const settings = alerts.setSettings(JSON.parse(body || '{}'));

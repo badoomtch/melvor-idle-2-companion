@@ -1,7 +1,7 @@
 // The Toolbelts page: items in your bank worth putting on, and what's in each toolbelt now.
-import { foodAdvice, slotStatus, toolbeltAdvice } from '/engine/toolbelt-advice.js';
-import { badge, esc, exact, gp, iconImg, pct } from '/ui/format.js';
-import { combatRecommendation, combatSetup } from './combat.js';
+import { foodAdvice, slotStatus, toolbeltAdvice, toolUpgrades } from '/engine/toolbelt-advice.js';
+import { badge, duration, esc, exact, gp, iconImg, pct } from '/ui/format.js';
+import { combatRecommendation, combatSetup, upgradeSource } from './combat.js';
 import { bonusText, card, itemLink, memo, methodLink, pageHead, saveKey, skillName } from './shared.js';
 import { currentMethodKey } from './route-ui.js';
 
@@ -110,7 +110,7 @@ function nowCard(ctx) {
 
 // The Toolbelts page: what to put on from your bank, what's waiting for a slot to open, and what's on now.
 export function toolbeltPage(ctx) {
-  const head = pageHead('Toolbelts', 'What to put in each skill\'s toolbelt from your bank. Your plan on What next also says when a swap makes a step quicker.');
+  const head = pageHead('Toolbelts', 'What to put in each skill\'s toolbelt from your bank. Your plan on Home also says when a swap makes a step quicker.');
   const advice = toolbeltAdviceFor(ctx);
   if (!advice) return `${head}<div class="card empty"><h2>No save loaded</h2><p>Toolbelt suggestions come from your save: what's in your bank and in your toolbelts.</p></div>`;
   const fight = advice.skills.some((s) => s.skill === 'Combat') ? fightFor(ctx) : null;
@@ -122,7 +122,7 @@ export function toolbeltPage(ctx) {
   const later = advice.later.length
     ? card(`For later <span class="muted small">· ${exact(advice.later.length)}</span>`, `<p class="small muted">Items you own for slots that aren't open yet, or that need a level first.</p><ul class="list-plain">${advice.later.map((l) => laterLine(ctx, l)).join('')}</ul>`, ' style="margin-top:12px"')
     : '';
-  return `${head}${swaps}${foodCard(ctx)}${later}${nowCard(ctx)}`;
+  return `${head}${swaps}${toolUpgradesCard(ctx)}${foodCard(ctx)}${later}${nowCard(ctx)}`;
 }
 
 // Food with a bonus for a skill (sushi's stealth for Thieving), selected in that skill's own food slot.
@@ -136,4 +136,59 @@ function foodCard(ctx) {
       ${gainLines(ctx, { skill: f.skill, changes: [], gain: f.gain }, null).map((l) => `<span class="sub small accent-text">${l}</span>`).join('')}</span></li>`;
   });
   return card('Food for your skills', `<p class="small muted">Some foods help a skill while they're selected in that skill's own food slot, as long as you have some.</p><ul class="list-plain">${rows.join('')}</ul>`, ' style="margin-top:12px"');
+}
+
+// Toolbelt items you don't have yet that would help a skill, and how to get them (once per autosave).
+export function toolUpgradesFor(ctx) {
+  const advice = toolbeltAdviceFor(ctx);
+  if (!advice) return null;
+  return memo('toolbelt:upgrades', saveKey(ctx), () => toolUpgrades(ctx.gd, ctx.save, { levels: ctx.levels, xp: ctx.xp ?? {}, current: currentMethodKey(ctx), advice, wallet: { GoldPieces: ctx.save.header?.gp ?? 0 } }));
+}
+
+// What a toolbelt item would do, short: "+4.2% XP on Swamp Snake", else its best XP and GP gains.
+export function toolGainText(ctx, r) {
+  const g = r.gain;
+  const show = (x) => `+${pct(x, x < 0.1 ? 1 : 0)}`;
+  if (g.current && Math.max(g.current.xp, g.current.gp) >= MIN_SHARE / 2.5) {
+    const xp = g.current.xp >= g.current.gp;
+    return `${show(xp ? g.current.xp : g.current.gp)} ${xp ? 'XP' : 'GP'} on ${g.current.method.name}`;
+  }
+  return [g.xp?.share >= MIN_SHARE / 2.5 ? `${show(g.xp.share)} XP` : '', g.gp?.share >= MIN_SHARE / 2.5 ? `${show(g.gp.share)} GP` : ''].filter(Boolean).join(' · ') || 'Small gain';
+}
+
+// One item worth getting: what it is, what it does for you, how to get it and what it still needs.
+export function toolUpgradeLine(ctx, r, { showSkill = true } = {}) {
+  const { gd } = ctx;
+  const tool = gd.items[r.item].tool;
+  const slot = r.replaces ? `${esc(r.slot.name)}: instead of ${itemLink(ctx, r.replaces)}` : `${esc(r.slot.name)}: empty now`;
+  const used = r.usedUp ? ` · used up as you go${r.qty > 1 ? `, about ${exact(r.qty)} an hour` : ''}` : '';
+  const needs = r.needs.length ? `<span class="sub small accent-text">Needs ${r.needs.map((n) => `${esc(gd.skillName(n.skill))} ${n.level} <span class="muted">(you're ${gd.levelOf(ctx.levels, n.skill)})</span>`).join(', ')}</span>` : '';
+  const time = r.needs.length ? (Number.isFinite(r.levelHours) ? duration(r.levelHours) : '?') : r.source.hours > 1 / 60 ? duration(r.source.hours) : 'Now';
+  return `<li><span>${showSkill ? `${skillBadge(ctx, r.skill)} ` : ''}${itemLink(ctx, r.item)} <span class="pill good">${esc(toolGainText(ctx, r))}</span>
+    <span class="sub muted small">${slot} · ${esc(toolText(tool))}${used}</span>${needs}
+    <span class="sub small">${upgradeSource(ctx, r)}</span></span><span class="num">${time}</span></li>`;
+}
+
+// Items you don't have that would make a skill (or every skill) better: what you can get now, then
+// what's a few levels away.
+export function toolUpgradesCard(ctx, { skill = null, ready: readyMax = 8, soon: soonMax = 5, title = 'Worth getting' } = {}) {
+  const up = toolUpgradesFor(ctx);
+  if (!up) return '';
+  const pick = (rows) => rows.filter((r) => !skill || r.skill === skill);
+  const ready = pick(up.ready).slice(0, readyMax);
+  const soon = pick(up.soon).slice(0, soonMax);
+  if (!ready.length && !soon.length) return '';
+  const where = skill ? `${esc(skillName(ctx, skill))} toolbelt` : 'toolbelts';
+  return card(title, `<p class="small muted">Items you don't have yet that would make your ${where} better, measured on your fastest training, your best money maker and what you're doing now. Quickest wins first; a small gain is listed when it takes a few minutes to get.</p>
+    ${ready.length ? `<h4>You can get now</h4><ul class="list-plain">${ready.map((r) => toolUpgradeLine(ctx, r, { showSkill: !skill })).join('')}</ul>` : ''}
+    ${soon.length ? `<h4 style="margin-top:12px">A few levels away</h4><ul class="list-plain">${soon.map((r) => toolUpgradeLine(ctx, r, { showSkill: !skill })).join('')}</ul>` : ''}`, ' style="margin-top:12px"');
+}
+
+// The best toolbelt item you could get now for one skill, as a line for a plan step or "Right now".
+export function toolUpgradeNote(ctx, skill) {
+  const r = toolUpgradesFor(ctx)?.ready.find((x) => x.skill === skill && x.worth >= 1);
+  if (!r) return '';
+  const m = r.source.method;
+  const how = r.source.type === 'buy' ? `buy it for ${gp(r.source.gp)} GP` : r.source.type === 'drop' ? `it drops from ${esc(r.source.enemy.name)}` : !m ? 'upgrade one in your bank' : ['artisan', 'cooking', 'firemaking'].includes(m.kind) ? `make it in ${esc(skillName(ctx, m.skill))}${m.name === ctx.gd.itemName(r.item) ? "" : ` (${methodLink(m)})`}` : `${m.kind === 'thieving' ? 'steal it from' : 'get it from'} ${methodLink(m)}`;
+  return `<span class="sub small accent-text">Worth getting: ${itemLink(ctx, r.item)} for your toolbelt, ${esc(toolGainText(ctx, r))}: ${how}${r.source.hours > 1 / 60 ? `, about ${duration(r.source.hours)}` : ''}. <a href="#/skills/${r.skill}">More</a></span>`;
 }

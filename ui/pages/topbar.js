@@ -15,29 +15,60 @@ import { memo, methodIcon, saveKey, skillName } from './shared.js';
 
 // Page renderers. Each takes the view context built by app.js and returns HTML.
 
-// Side menu: id, label, and the game's own icon for it.
+// Every page: id, label (its tab), and the game's own icon for it.
 export const TABS = [
-  ['overview', 'Overview', 'res://Assets/Icons/Statistics_64.png'],
-  ['next', 'What next?', 'res://Assets/Icons/GuideBook.png'],
-  ['away', 'Away planner', 'res://Assets/Icons/sleep.png'],
-  ['skills', 'Skills', 'res://Assets/Icons/Mastery_Icon_48.png'],
-  ['toolbelts', 'Toolbelts', 'res://Assets/Items/RanchersBelt.png'],
+  ['home', 'Your plan', 'res://Assets/Icons/GuideBook.png'],
+  ['goals', 'Goals', 'res://Assets/Icons/CheckeredFlag.png'],
+  ['skills', 'All skills', 'res://Assets/Icons/Mastery_Icon_48.png'],
   ['mastery', 'Mastery', 'res://Assets/Icons/Milestones.png'],
-  ['money', 'Money', 'res://Assets/Currencies/GoldPieces.svg'],
-  ['bank', 'Bank', 'res://Assets/Icons/Bank_64.png'],
-  ['shop', 'Shop planner', 'res://Assets/Icons/Shop_64.png'],
+  ['toolbelts', 'Toolbelts', 'res://Assets/Items/RanchersBelt.png'],
   ['combat', 'Combat', 'res://Assets/Icons/Combat_64.png'],
   ['slayer', 'Slayer', 'res://Assets/Icons/Slayer.png'],
-  ['calculators', 'Calculators', 'res://Assets/Items/SandsofTime.png'],
-  ['lookup', 'Lookup', 'res://Assets/Icons/search.png'],
+  ['money', 'Making money', 'res://Assets/Currencies/GoldPieces.svg'],
+  ['away', 'Away planner', 'res://Assets/Icons/sleep.png'],
+  ['shop', 'Shop planner', 'res://Assets/Icons/Shop_64.png'],
+  ['bank', 'Bank', 'res://Assets/Icons/Bank_64.png'],
   ['rare', 'Rare items', 'res://Assets/Items/TreasureChest.png'],
-  ['goals', 'Goals', 'res://Assets/Icons/CheckeredFlag.png'],
-  ['quests', 'Quests', 'res://Assets/Icons/Quests.png'],
-  ['history', 'History', 'res://Assets/Icons/history.png'],
   ['completion', 'Completion', 'res://Assets/Icons/Completion_64.png'],
+  ['quests', 'Quests', 'res://Assets/Icons/Quests.png'],
+  ['lookup', 'Lookup', 'res://Assets/Icons/search.png'],
+  ['calculators', 'Calculators', 'res://Assets/Items/SandsofTime.png'],
+  ['history', 'History', 'res://Assets/Icons/history.png'],
   ['accuracy', 'Accuracy', 'res://Assets/Icons/Accurate.png'],
   ['settings', 'Settings', 'res://Assets/Icons/Settings_64.png'],
+  // Old addresses, kept so links and bookmarks still work: both are Home now.
+  ['next', 'Your plan', 'res://Assets/Icons/GuideBook.png'],
+  ['overview', 'Your plan', 'res://Assets/Icons/GuideBook.png'],
 ];
+
+// The side menu: a few sections, each with its pages as tabs along the top. A section opens on its first page.
+export const SECTIONS = [
+  { id: 'home', label: 'Home', icon: 'res://Assets/Icons/GuideBook.png', pages: ['home', 'goals'] },
+  { id: 'skills', label: 'Skills', icon: 'res://Assets/Icons/Mastery_Icon_48.png', pages: ['skills', 'mastery', 'toolbelts'] },
+  { id: 'combat', label: 'Combat', icon: 'res://Assets/Icons/Combat_64.png', pages: ['combat', 'slayer'] },
+  { id: 'money', label: 'Money', icon: 'res://Assets/Currencies/GoldPieces.svg', pages: ['money', 'away', 'shop', 'bank'] },
+  { id: 'collection', label: 'Collection', icon: 'res://Assets/Items/TreasureChest.png', pages: ['rare', 'completion', 'quests'] },
+  { id: 'lookup', label: 'Lookup', icon: 'res://Assets/Icons/search.png', pages: ['lookup', 'calculators'] },
+  { id: 'history', label: 'History', icon: 'res://Assets/Icons/history.png', pages: ['history', 'accuracy'] },
+  { id: 'settings', label: 'Settings', icon: 'res://Assets/Icons/Settings_64.png', pages: ['settings'] },
+];
+// The page an old address shows.
+export const PAGE_ALIASES = { next: 'home', overview: 'home' };
+export const pageOf = (tab) => PAGE_ALIASES[tab] ?? tab;
+export const sectionOf = (tab) => SECTIONS.find((s) => s.pages.includes(pageOf(tab))) ?? SECTIONS[0];
+
+// The tabs along the top of a page: the other pages in its section (none for a section of one page).
+export function sectionTabs(route, ctx) {
+  const section = sectionOf(route.tab);
+  if (section.pages.length < 2) return '';
+  const on = ctx ? workingOn(ctx) : new Map();
+  const page = pageOf(route.tab);
+  return `<nav class="subtabs" aria-label="${esc(section.label)}">${section.pages.map((id) => {
+    const [, label] = TABS.find(([t]) => t === id);
+    const why = on.get(id);
+    return `<a href="#/${id}"${page === id ? ' aria-current="page"' : ''}${why ? ` class="doing" title="${esc(why)}"` : ''}>${esc(label)}${why ? '<span class="doing-dot" role="img" aria-label="' + esc(why) + '"></span>' : ''}</a>`;
+  }).join('')}</nav>`;
+}
 
 // ---------- top bar ----------
 
@@ -91,7 +122,7 @@ export function topAlerts(ctx) {
   }
   const out = [];
   const doing = activityKey(save.header);
-  if (!doing) out.push({ level: 'warn', text: 'Nothing is training', href: '#/next', title: 'See What next for what to do.' });
+  if (!doing) out.push({ level: 'warn', text: 'Nothing is training', href: '#/home', title: 'See your plan on Home for what to do.' });
   for (const s of currentSupplies(gd, save, ctx.levels, ctx.stock)) {
     const name = gd.itemName(s.item);
     const icon = gd.items[s.item]?.icon;
@@ -148,7 +179,7 @@ function workingOn(ctx) {
     if (task) out.set('slayer', `${enemy.name} is your Slayer task: ${exact(task.progress)} of ${exact(task.length)}`);
   }
   const step = routeFor(ctx).step;
-  if (step?.on) out.set('next', `You're on your plan: ${describeStep(gd, step)}`);
+  if (step?.on) out.set('home', `You're on your plan: ${describeStep(gd, step)}`);
   const d = doing(ctx);
   if (d) {
     const found = save.itemsFound;
@@ -168,11 +199,13 @@ function workingOn(ctx) {
 
 export function renderTabs(route, ctx) {
   const on = ctx ? workingOn(ctx) : new Map();
-  const link = ([id, label, icon]) => {
-    const why = on.get(id);
-    return `<a href="#/${id}"${route.tab === id ? ' aria-current="page"' : ''}${why ? ` class="doing" title="${esc(why)}"` : ''}>${iconImg(icon, 'icon nav-icon')}<span>${esc(label)}</span>${why ? `<span class="doing-dot" role="img" aria-label="${esc(why)}"></span>` : ''}</a>`;
+  const current = sectionOf(route.tab).id;
+  // A section shows the dot when any of its pages has something you're doing.
+  const link = ({ id, label, icon, pages }) => {
+    const why = pages.map((p) => on.get(p)).find(Boolean);
+    return `<a href="#/${pages[0]}"${current === id ? ' aria-current="page"' : ''}${why ? ` class="doing" title="${esc(why)}"` : ''}>${iconImg(icon, 'icon nav-icon')}<span>${esc(label)}</span>${why ? `<span class="doing-dot" role="img" aria-label="${esc(why)}"></span>` : ''}</a>`;
   };
-  return `<div class="nav-links">${TABS.map(link).join('')}</div>${ctx ? renderNavNow(ctx) : ''}`;
+  return `<div class="nav-links">${SECTIONS.map(link).join('')}</div>${ctx ? renderNavNow(ctx) : ''}`;
 }
 
 // ---------- "Now" panel under the side menu ----------

@@ -111,3 +111,39 @@ test('a kept plan is replaced as soon as a step left needs something nothing you
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a plan made in the background: the plan you had keeps going, and the new one says when it is ready', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mc-routes-'));
+  const ready = [];
+  let release;
+  const gate = new Promise((r) => (release = r));
+  // A maker that waits until told to, like a worker taking a few seconds.
+  const { makePlan } = await import('../server/plan-maker.js');
+  const maker = (job) => gate.then(() => makePlan(gd, job));
+  const w = createRouteWatcher({ gd, dir, notify: () => {}, settings: () => ({ enabled: true, planSteps: true }), now: () => clock, maker, onPlan: (id) => ready.push(id) });
+  try {
+    assert.deepEqual(w.onSave('a', save(20, { 'MelvorBase:RawShrimp': 500 })), []);
+    assert.equal(w.get('a'), null, 'nothing yet');
+    assert.ok(w.making('a'));
+    // Asking again while it's being made gets the same plan, not a second one.
+    const asked = w.replan('a');
+    release();
+    const plan = await asked;
+    assert.ok(plan.legs.length > 0);
+    assert.equal(w.get('a'), plan);
+    assert.deepEqual(ready, ['a']);
+    assert.equal(w.making('a'), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('plans really are made in a worker thread', async () => {
+  const { planWorker } = await import('../server/plan-maker.js');
+  const data = JSON.parse(readFileSync(new URL('../data/companion-data.json', import.meta.url), 'utf8'));
+  const make = planWorker(data, gd);
+  const locked = await make({ save: save(20, { 'MelvorBase:RawShrimp': 500 }), madeAt: clock });
+  assert.ok(locked.legs.length > 0);
+  assert.equal(locked.madeAt, clock);
+  assert.deepEqual(locked.done, []);
+});

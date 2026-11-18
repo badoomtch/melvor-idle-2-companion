@@ -18,7 +18,8 @@ let currentGd = null; // set by renderView (setCurrentGd) so methodLink can find
 export function setCurrentGd(gd) {
   currentGd = gd;
 }
-export const methodLink = (m) => `<a class="with-icon" href="#/lookup/method/${enc(m.key)}">${currentGd ? methodIcon(currentGd, m) : ''}${esc(m.name)}</a>`;
+// A fight in a plan links to its enemy.
+export const methodLink = (m) => `<a class="with-icon" href="#/lookup/${m.kind === 'fight' ? `enemy/${enc(m.enemy)}` : `method/${enc(m.key)}`}">${currentGd ? methodIcon(currentGd, m) : ''}${esc(m.name)}</a>`;
 export const skillName = (ctx, s) => ctx.gd.skillName(s);
 
 // One step of a gathering chain: "get 3 Iron Ore (Mining)", or "make 3 Iron Bar with Iron Bar (Smithing)"
@@ -39,6 +40,36 @@ export function memo(name, key, compute) {
   memoCache.set(name, { key, value });
   return value;
 }
+
+// Work too slow for a page to wait on (the best fight for every combat skill): the first draw gets
+// `undefined` and the work runs straight after, one piece at a time, then the page is drawn again with it
+// (app.js listens for 'companion:rerender'). Keyed like memo(): a new autosave works it out again.
+const laterCache = new Map();
+const pending = new Set();
+const pendingLoud = new Set(); // asked for quietly first, then by a page that's waiting on it
+// `quiet`: work it out ahead of time without drawing the page again (another page will want it).
+export function later(name, key, compute, { quiet = false } = {}) {
+  const k = `${name}|${key}`;
+  if (laterCache.has(k)) return laterCache.get(k);
+  if (!pending.has(k)) {
+    pending.add(k);
+    setTimeout(() => {
+      try {
+        laterCache.set(k, compute());
+      } catch {
+        laterCache.set(k, null);
+      }
+      pending.delete(k);
+      while (laterCache.size > 64) laterCache.delete(laterCache.keys().next().value);
+      if (pendingLoud.delete(k) || !quiet) window.dispatchEvent(new Event('companion:rerender'));
+    }, 20);
+  } else if (!quiet) {
+    // Asked for quietly before, and now a page is waiting on it: draw again when it's done.
+    pendingLoud.add(k);
+  }
+  return undefined;
+}
+
 // A key that changes with every new autosave (or any change to levels and bonuses).
 export const saveKey = (ctx) => `${ctx.save?.id ?? 'manual'}|${ctx.save?.header.timestamp ?? 0}|${ctx.state.useBonuses}|${ctx.state.levelSource}|${Object.values(ctx.levels).join(',')}`;
 // A key that changes when your levels, bonuses or (optionally) bank change.
@@ -153,9 +184,10 @@ export function methodDetail(ctx, x) {
   </div>`;
 }
 
-export function methodRows(ctx, list, { columns = ['skill'], expandable = true, sustain = false, markBest = true } = {}) {
-  // The best one you can leave running.
-  const bestIndex = list.findIndex((x) => x.ok !== false && !x.unknown?.length && !idleDanger(ctx.gd, x.rates)?.risky);
+export function methodRows(ctx, list, { columns = ['skill'], expandable = true, sustain = false, markBest = true, bestKey = null } = {}) {
+  // The best one you can leave running (or `bestKey`, when the page has worked it out). `x.cantGet`:
+  // materials nothing you can do makes (and you don't have an hour of), so it isn't one you can keep doing.
+  const bestIndex = bestKey ? list.findIndex((x) => (x.rates.method ?? x.method).key === bestKey) : list.findIndex((x) => x.ok !== false && !x.unknown?.length && !x.cantGet?.length && !idleDanger(ctx.gd, x.rates)?.risky);
   return list.flatMap((x, i) => {
     const r = x.rates;
     const m = r.method ?? x.method;
@@ -168,7 +200,7 @@ export function methodRows(ctx, list, { columns = ['skill'], expandable = true, 
       `<td class="num">${num(r.xpPerHour)}</td>`,
       `<td class="num">${signed(r.profitPerHour)}</td>`,
       ...(sustain ? [`<td class="num">${duration(x.sustain)}</td>`] : []),
-      `<td class="small">${locked ? `<span class="pill">${x.missing.some((q) => q.type === 'locked') ? 'Not in demo' : `${x.missing.every((q) => q.type === 'level') ? 'Unlocks at' : 'Needs'} ${requirementText(ctx, x.missing)}`}</span>` : `${x.unknown?.length ? `<span class="pill warn">Needs ${requirementText(ctx, x.unknown)}</span> ` : ''}${x.equip?.length ? `<span class="pill accent">${requirementText(ctx, x.equip)}</span> ` : ''}${rateNotes(ctx, r)}`}</td>`,
+      `<td class="small">${locked ? `<span class="pill">${x.missing.some((q) => q.type === 'locked') ? 'Not in demo' : `${x.missing.every((q) => q.type === 'level') ? 'Unlocks at' : 'Needs'} ${requirementText(ctx, x.missing)}`}</span>` : `${x.unknown?.length ? `<span class="pill warn">Needs ${requirementText(ctx, x.unknown)}</span> ` : ''}${x.equip?.length ? `<span class="pill accent">${requirementText(ctx, x.equip)}</span> ` : ''}${(x.cantGet ?? []).map((g) => `<span class="pill warn">${g.have > 0 ? `You have ${exact(g.have)} ${esc(ctx.gd.itemName(g.item))}, and ${g.farming ? 'only Farming grows more' : 'nothing you can do makes more'}` : `Needs ${esc(ctx.gd.itemName(g.item))}, which ${g.farming ? 'only Farming grows' : 'nothing you can do makes'}`}</span> `).join('')}${rateNotes(ctx, r)}`}</td>`,
     ];
     const rows = [`<tr class="${locked ? 'locked' : markBest && i === bestIndex ? 'best' : ''}">${cells.join('')}</tr>`];
     if (open) rows.push(`<tr><td colspan="${cells.length}">${methodDetail(ctx, x.method ? x : { ...x, method: m })}</td></tr>`);

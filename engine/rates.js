@@ -1,6 +1,7 @@
 // Expected per-hour rates for every training method, transcribed from the game's action code.
 // computeRates adds your skilling bonuses (shop, toolbelt, pets, Mastery Guild ranks) where they're
 // modelled; see MODELLED_BONUS_STATS. Everything else is the action's own numbers.
+import { fightRates } from './fight-method.js';
 import { GP } from './gamedata.js';
 
 export const HOUR_MS = 3_600_000;
@@ -222,7 +223,7 @@ function cycle(gd, method, level, acc, options = {}) {
       for (const c of method.currencyCosts) bump(acc.currencies, c.currency, -c.qty);
       for (const x of method.products) bump(acc.outputs, x.item, s * x.chance * x.qty);
       acc.xp += s * method.xp;
-      return { ms: method.steps * method.interval, slowMs: slowTries(s) * method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, completes: s, note: method.steps > 1 ? `${method.steps} steps per craft` : undefined };
+      return { ms: method.steps * method.interval, slowMs: slowTries(s) * method.steps * method.interval, per: { step: method.steps }, successChance: method.kind === 'cooking' ? s : undefined, completes: s, note: method.steps > 1 ? `${Number.isInteger(method.steps) ? method.steps : `about ${Math.round(method.steps * 10) / 10}`} steps per craft` : undefined };
     }
     case 'firemaking': {
       for (const x of method.ingredients) bump(acc.inputs, x.item, x.qty);
@@ -529,6 +530,8 @@ export function huntingTodo(gd, method) {
 }
 
 export function computeRates(gd, method, level = method.level, options = {}) {
+  // A fight in a plan carries its own numbers (fight-method.js).
+  if (method.kind === 'fight') return fightRates(method);
   const choices = options.bonuses ? null : huntingChoices(gd, method);
   if (choices) options = { ...options, huntingBait: choices.bait, trapless: choices.trapless };
   const effects = [...(options.bonuses ?? gd.playerBonuses ?? []), ...(choices?.effects ?? [])].filter((e) => bonusApplies(e, method));

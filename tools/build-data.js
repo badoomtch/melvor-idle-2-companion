@@ -46,9 +46,10 @@ const NS = typeof pkg.Namespace === 'string' ? pkg.Namespace : (pkg.Namespace?.I
 const O = pkg.Objects ?? {};
 const EC = pkg.EntityConfig ?? {};
 
-// Skill level cap from ExperienceComponent's constructor: 60 in the demo, 120 in the Playtest. Override with --level-cap.
+// Skill level cap from ExperienceComponent's constructor: 60 in the demo, 99 in the Playtest (it was 120
+// until 0.11.6, which moved the content above 99 down). Nothing in the game raises it. Override with --level-cap.
 const lockedObjects = JSON.stringify(O).split(':DemoLocked').length - 1;
-MECHANICS.levelCap = capIndex >= 0 ? Number(args[capIndex + 1]) : lockedObjects > 50 ? 60 : 120;
+MECHANICS.levelCap = capIndex >= 0 ? Number(args[capIndex + 1]) : lockedObjects > 50 ? 60 : 99;
 
 const full = (id) => (id == null ? id : String(id).includes(':') ? String(id) : `${NS}:${id}`);
 const local = (id) => (id == null ? id : String(id).split(':').pop());

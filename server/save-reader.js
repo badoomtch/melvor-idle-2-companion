@@ -16,8 +16,10 @@ import { defaultXpTable } from '../engine/xp.js';
 // against a real save. The Steam playtest build 0.11.5 alpha.2 (13 Nov 2026) writes 29: no warnings,
 // every region read to its last byte, every bank item known, and the levels worked out from XP add up
 // to the header's total level. Its journal and technique formulas also give the levels 0.11.4 saves
-// stored.
-export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_8_3: 15, Alpha0_9_0: 16, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, Alpha0_11_5: 29, LatestVerified: 29 };
+// stored. 0.11.6 alpha.1 (17 Nov 2026) writes 31, checked the same way: 30 (Alpha0_11_5_4) adds a
+// "first time" flag after the Agility, Astrology and Herblore entities' components, which nothing here
+// reads, and 31 (Alpha0_11_5_5) changes no layout.
+export const SaveVersion = { Alpha0_4_4: 1, Localization: 9, Alpha0_8_0: 13, Alpha0_8_3: 15, Alpha0_9_0: 16, Alpha0_11_0: 24, Alpha0_11_1: 25, Alpha0_11_1_1: 26, Alpha0_11_5: 29, LatestVerified: 31 };
 
 export class SaveFormatError extends Error {}
 

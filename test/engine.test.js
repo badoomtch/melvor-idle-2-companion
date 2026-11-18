@@ -330,8 +330,10 @@ test('hunting and astrology rates follow the action code', () => {
 });
 
 test('level cap matches the game build', () => {
-  assert.equal(gd.levelCap, 120);
-  assert.ok(gd.methods.some((m) => m.level > 99), 'Playtest has content past 99');
+  // 0.11.6 lowered it from 120 to 99 and moved what was above 99 down (Whale is Fishing 98).
+  assert.equal(gd.levelCap, 99);
+  assert.ok(!gd.methods.some((m) => m.level > gd.levelCap), 'every method can be reached');
+  assert.ok(gd.methods.some((m) => m.level > 90), 'the full game, not the demo (capped at 60)');
 });
 
 test('simulation levels up and never loses XP', () => {

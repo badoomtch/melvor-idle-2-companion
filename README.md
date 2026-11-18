@@ -31,7 +31,7 @@ It runs on your own computer as a small web page. There's no account, no sign-in
 - Home shows what you're doing (a fight included), how long to your next level, how long your supplies last, and what to make or buy before you start so you can keep going for a few hours.
 - The menu has eight sections, each with its pages as tabs. A green dot marks the sections and pages what you're doing touches, such as Combat while you fight or Rare items when your action can give one you haven't found.
 - When you come back after a while, Home sums up what happened: XP and levels gained, gold, rare finds, and whether anything stopped.
-- The same warnings, plus level-ups, rare finds, finished plan steps, ready harvests and hungry ranch animals, can arrive as desktop notifications even with the page closed. Turn them on in Settings.
+- The same warnings, plus level-ups, rare finds, finished plan steps, ready harvests and hungry ranch animals, can arrive as desktop notifications even with the page closed. Turn them on in **Settings → Alerts**.
 - The Pop out button gives you a small always-on-top window with what you're doing, what's next and any warnings.
 
 ## Screenshots
@@ -112,7 +112,7 @@ See [CHANGELOG.md](CHANGELOG.md) for what changed in each version.
 
 ## Feedback
 
-Found advice that doesn't match the game? [Open an issue](https://github.com/badoomtch/melvor-idle-2-companion/issues) with a screenshot of the page and what you expected. Settings has a **Save my stats file** button that writes your levels and the companion's estimate-vs-real numbers to a file (no character name), which helps a lot.
+Found advice that doesn't match the game? [Open an issue](https://github.com/badoomtch/melvor-idle-2-companion/issues) with a screenshot of the page and what you expected. **Settings → About** has a **Save my stats file** button that writes your levels and the companion's estimate-vs-real numbers to a file (no character name), which helps a lot.
 
 ## Licence
 

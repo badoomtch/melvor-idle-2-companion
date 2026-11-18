@@ -119,7 +119,7 @@ function suppliesCard(ctx) {
   const flows = ctx.save.flows;
   const basis = list.some((x) => x.measured) ? `Measured over your last ${duration((flows?.minutes ?? 0) / 60)} of this action.` : 'Estimated from the action\'s base rates until a few autosaves come in.';
   const rows = list.slice(0, 6).map((x) => `<li><span>${itemLink(ctx, x.item)} <span class="muted small">${num(x.perHour)}/h · ${exact(x.qty)} left</span></span><span class="num${x.hoursLeft * 60 <= minutes ? ' warn-text' : ''}">${x.qty > 0 ? duration(x.hoursLeft) : 'Out'}</span></li>`);
-  return card('Supplies', rows.length ? `<ul class="list-plain">${rows.join('')}</ul><p class="small muted" style="margin-top:8px">${basis} <a href="#/settings">Alerts</a></p>${stockUpPart(ctx, list)}` : '<p class="muted small">Nothing being used up right now.</p>');
+  return card('Supplies', rows.length ? `<ul class="list-plain">${rows.join('')}</ul><p class="small muted" style="margin-top:8px">${basis} <a href="#/alerts">Alerts</a></p>${stockUpPart(ctx, list)}` : '<p class="muted small">Nothing being used up right now.</p>');
 }
 
 // Combat skills whose cards show your best fight, and what that depends on: your combat levels, which

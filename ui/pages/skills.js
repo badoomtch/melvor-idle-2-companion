@@ -247,5 +247,5 @@ export function skills(ctx, [skillArg]) {
     ${skill === 'Farming' ? `${farmingCard(ctx)}${grainMillCard(ctx)}` : skill === 'Ranching' ? ranchCard(ctx) : ''}
     ${controls}
     ${table(['Method', '#Lvl', '#XP / h', '#GP / h', 'Notes'], methodRows(ctx, all, { columns: [], markBest: sort !== 'level', bestKey }))}
-    <p class="small muted" style="margin-top:10px">GP/h is profit: what you gain minus what you use up (materials and food), at sell prices. ${ctx.gd.playerBonuses ? 'Includes your shop upgrades, toolbelt items, pets and Mastery Guild rank.' : 'Base rates (bonuses switched off in Settings).'}</p>`;
+    <p class="small muted" style="margin-top:10px">GP/h is profit: what you gain minus what you use up (materials and food), at sell prices. ${ctx.gd.playerBonuses ? 'Includes your shop upgrades, toolbelt items, pets and Mastery Guild rank.' : 'Base rates (bonuses switched off in <a href="#/bonuses">Settings</a>).'}</p>`;
 }

@@ -636,7 +636,7 @@ const ACTIONS = {
   },
   notifyNo() {
     store.set('notifyAsked', true);
-    toast('No desktop notifications', 'Warnings still show at the top of the page. Turn notifications on any time in Settings.');
+    toast('No desktop notifications', 'Warnings still show at the top of the page. Turn notifications on any time in Settings, under Alerts.');
   },
   async serverAlerts() {
     await syncServerAlerts(!state.serverAlerts?.enabled);

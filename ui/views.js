@@ -14,7 +14,7 @@ import { lookupView } from './pages/lookup.js';
 import { masteryPage } from './pages/mastery.js';
 import { money } from './pages/money.js';
 import { rarePage } from './pages/rare.js';
-import { settings } from './pages/settings.js';
+import { aboutPage, alertsPage, bonusesPage, settings } from './pages/settings.js';
 import { setCurrentGd } from './pages/shared.js';
 import { shopPlanner } from './pages/shop.js';
 import { skills } from './pages/skills.js';
@@ -25,7 +25,7 @@ import { pageOf, sectionTabs } from './pages/topbar.js';
 export { renderMini } from './pages/mini.js';
 export { AUTOSAVE_MS, renderLivePill, renderSaveBar, renderTabs, renderTopAlerts, TABS, THEMES, topAlerts } from './pages/topbar.js';
 
-const VIEWS = { home, away, skills, toolbelts: toolbeltPage, mastery: masteryPage, money, bank, shop: shopPlanner, combat, slayer, calculators, lookup: lookupView, rare: rarePage, goals, quests, history: historyView, completion, accuracy, settings };
+const VIEWS = { home, away, skills, toolbelts: toolbeltPage, mastery: masteryPage, money, bank, shop: shopPlanner, combat, slayer, calculators, lookup: lookupView, rare: rarePage, goals, quests, history: historyView, completion, accuracy, settings, alerts: alertsPage, bonuses: bonusesPage, about: aboutPage };
 
 export function renderView(ctx) {
   setCurrentGd(ctx.gd);

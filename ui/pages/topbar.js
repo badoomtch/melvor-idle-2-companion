@@ -35,7 +35,10 @@ export const TABS = [
   ['calculators', 'Calculators', 'res://Assets/Items/SandsofTime.png'],
   ['history', 'History', 'res://Assets/Icons/history.png'],
   ['accuracy', 'Accuracy', 'res://Assets/Icons/Accurate.png'],
-  ['settings', 'Settings', 'res://Assets/Icons/Settings_64.png'],
+  ['settings', 'General', 'res://Assets/Icons/Settings_64.png'],
+  ['alerts', 'Alerts', 'res://Assets/Icons/Settings_64.png'],
+  ['bonuses', 'Bonuses', 'res://Assets/Icons/Settings_64.png'],
+  ['about', 'About', 'res://Assets/Icons/Settings_64.png'],
   // Old addresses, kept so links and bookmarks still work: both are Home now.
   ['next', 'Your plan', 'res://Assets/Icons/GuideBook.png'],
   ['overview', 'Your plan', 'res://Assets/Icons/GuideBook.png'],
@@ -50,7 +53,7 @@ export const SECTIONS = [
   { id: 'collection', label: 'Collection', icon: 'res://Assets/Items/TreasureChest.png', pages: ['rare', 'completion', 'quests'] },
   { id: 'lookup', label: 'Lookup', icon: 'res://Assets/Icons/search.png', pages: ['lookup', 'calculators'] },
   { id: 'history', label: 'History', icon: 'res://Assets/Icons/history.png', pages: ['history', 'accuracy'] },
-  { id: 'settings', label: 'Settings', icon: 'res://Assets/Icons/Settings_64.png', pages: ['settings'] },
+  { id: 'settings', label: 'Settings', icon: 'res://Assets/Icons/Settings_64.png', pages: ['settings', 'alerts', 'bonuses', 'about'] },
 ];
 // The page an old address shows.
 export const PAGE_ALIASES = { next: 'home', overview: 'home' };
@@ -152,7 +155,7 @@ export function renderTopAlerts(ctx, list = topAlerts(ctx)) {
 export function renderLivePill(ctx) {
   const { state } = ctx;
   if (state.levelSource === 'manual') return '<span class="pill accent">Manual levels</span>';
-  if (!ctx.save) return '<a class="pill warn" href="#/settings">No save found</a>';
+  if (!ctx.save) return '<a class="pill warn" href="#/settings" title="See where saves are read from">No save found</a>';
   if (!state.live.connected) return '<span class="pill bad" title="Start the companion again to reconnect">Companion stopped</span>';
   const age = Math.max(0, Date.now() - ctx.save.header.timestamp);
   if (age > 60_000) return `<span class="pill warn" title="No autosave for a while: the game may be paused or closed. Last saved ${esc(ago(ctx.save.header.timestamp))}.">Game idle</span>`;

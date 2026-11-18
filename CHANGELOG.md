@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Settings is split into four tabs instead of one long page.**
+  - **General:** your levels, where saves are read from, and appearance.
+  - **Alerts:** what to tell you about, grouped into warnings, progress and sound, then how you get them (pop-ups and desktop notifications).
+  - **Bonuses:** the switch and what's counted, in columns.
+  - **About:** version and update checks, how the numbers work, and the stats file.
+- **Bonuses are easier to read.** Each skill shows its general bonuses first. Bonuses for one animal, area or recipe fold away under "For Wild Chicken, Wild Cow, Greentail Bird and 4 more", and use the game's names. Hunting used to list "WildChicken" and the like, about 25 lines of them.
+
 ## 0.4.6
 
 ### Added

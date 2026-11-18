@@ -460,3 +460,37 @@ test('the shop offer for a step: how many purchases, what they cost and whether 
   assert.equal(shopOffer(gd, sand, 22, { levels: {}, wallet: { GoldPieces: 50 } }).affordable, false);
   assert.equal(shopOffer(gd, 'MelvorBase:NormalLog', 10, { levels: {} }), null, 'not sold');
 });
+
+test("what you're doing is the step you're on, even in a later goal", () => {
+  // Goal 1 trains Woodcutting, goal 2 Mining. Mining in the game: goal 2's step is the one you're on,
+  // not goal 1's first step. Doing something not in the plan: goal 1's step, as before.
+  const levels = at(30);
+  const xp = Object.fromEntries(gd.skills.map((s) => [s.id, gd.xp.xpForLevel(30)]));
+  const train = (method) => {
+    const r = computeRates(gd, method, 30);
+    const xpEach = r.xpPerHour / r.cyclesPerHour;
+    return { kind: 'train', method, actions: 100, hours: 100 / r.cyclesPerHour, xpGain: 100 * xpEach, xpAfter: xp[method.skill] + 100 * xpEach, toLevel: 30, levelUps: [] };
+  };
+  const chop = gd.methodsBySkill.Woodcutting[0];
+  const mine = gd.methodsBySkill.Mining[0];
+  const locked = lockRoute({ legs: [
+    { kind: 'unlock', skill: 'Woodcutting', from: 30, to: 31, unlocks: [], steps: [train(chop)] },
+    { kind: 'unlock', skill: 'Mining', from: 30, to: 31, unlocks: [], steps: [train(mine)] },
+  ] });
+  const mining = routeProgress(gd, locked, { levels, xp, bank: {}, current: mine.key });
+  assert.equal(mining.step.method.key, mine.key);
+  assert.ok(mining.step.on);
+  assert.equal(mining.legs.findIndex((l) => l.steps.includes(mining.step)), 1);
+  const other = routeProgress(gd, locked, { levels, xp, bank: {}, current: 'Thieving/Nothing' });
+  assert.equal(other.step.method.key, chop.key);
+  assert.ok(!other.step.on);
+  // Mining that's the step you just finished, still running in the game: the plan moves on in order.
+  const twice = lockRoute({ legs: [
+    { kind: 'unlock', skill: 'Mining', from: 30, to: 31, unlocks: [], steps: [train(mine), train(chop)] },
+    { kind: 'unlock', skill: 'Mining', from: 31, to: 32, unlocks: [], steps: [train(mine)] },
+  ] });
+  twice.done.push(twice.legs[0].steps[0].id);
+  const leftOver = routeProgress(gd, twice, { levels, xp, bank: {}, current: mine.key });
+  assert.equal(leftOver.step.method.key, chop.key);
+  assert.equal(leftOver.legs.findIndex((l) => l.steps.includes(leftOver.step)), 0);
+});

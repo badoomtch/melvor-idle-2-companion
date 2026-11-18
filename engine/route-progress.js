@@ -231,6 +231,19 @@ export function routeProgress(gd, locked, { levels, xp, bank, current = null, ma
       step.on = step.method.key === current;
     }
   }
+  // What you're doing in the game, when it's a step of a later goal (smelting the bars goal 2 needs while
+  // goal 1 waits): that's the step you're on. Not when it's the step you last finished, still running
+  // (the game keeps going after the plan's amount): then the plan moves on in order. Stuck still means
+  // the first goal can't go on.
+  const lastDone = newlyDone.at(-1) ?? locked.done.at(-1);
+  const justFinished = lastDone != null && legs.some((leg) => leg.steps.some((st) => st.id === lastDone && st.method.key === current));
+  if (current && step && !step.on && !justFinished) {
+    const doing = legs.flatMap((leg) => leg.steps).find((st) => !st.done && st.method.key === current && !missing(st));
+    if (doing) {
+      step = doing;
+      step.on = true;
+    }
+  }
   // Bank space: the item types the steps still to do bring in that the bank doesn't hold, against the free
   // slots. Short means the game will stop part-way (it can't take a new item with the bank full).
   let space = null;

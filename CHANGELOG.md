@@ -4,7 +4,7 @@
 
 ### Changed
 
-- **The companion has its own logo** in the top bar and the browser tab: a gold take on the game's castle M, with red swords, in place of the game's own logo.
+- **The companion has its own logo** in the top bar and the browser tab: a gold take on the game's castle M, with red swords, in place of the game's own logo. The Windows program has it as its icon too, in place of Node's.
 - **Settings is split into four tabs instead of one long page.**
   - **General:** your levels, where saves are read from, and appearance.
   - **Alerts:** what to tell you about, grouped into warnings, progress and sound, then how you get them (pop-ups and desktop notifications).

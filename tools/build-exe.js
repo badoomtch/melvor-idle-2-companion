@@ -13,9 +13,10 @@
 
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setExeIcon } from './exe-icon.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DIST = join(ROOT, 'dist');
@@ -87,9 +88,25 @@ createRequire(entry)(entry);
 `);
 
 const exe = process.platform === 'win32' ? 'MelvorIdle2Companion.exe' : 'MelvorIdle2Companion';
-writeFileSync(join(DIST, 'sea.json'), JSON.stringify({ main: 'launcher.cjs', output: exe, disableExperimentalSEAWarning: true, assets: { 'app.pack': 'app.pack' } }, null, 2));
+// On Windows the program gets the companion's own icon (ui/brand/logo.ico, from tools/make-icon.js) in
+// place of Node's. It goes into a copy of Node before the companion is packed in: Windows can't change
+// the icon in place, so doing it afterwards would leave a second copy of the whole pack in the exe.
+// A build without it still works, so a failure only warns.
+let base = null;
+if (process.platform === 'win32') {
+  const copy = join(DIST, 'node-base.exe');
+  copyFileSync(process.execPath, copy);
+  try {
+    console.log(`Icon: ${setExeIcon(copy, join(ROOT, 'ui', 'brand', 'logo.ico'))}.`);
+    base = 'node-base.exe';
+  } catch (e) {
+    console.warn(`Could not set the program icon, so it has Node's: ${String(e.stderr || e.message).replace(/<[^>]+>/g, ' ').trim().slice(0, 300)}`);
+    rmSync(copy);
+  }
+}
+writeFileSync(join(DIST, 'sea.json'), JSON.stringify({ main: 'launcher.cjs', output: exe, ...(base ? { executable: base } : {}), disableExperimentalSEAWarning: true, assets: { 'app.pack': 'app.pack' } }, null, 2));
 execFileSync(process.execPath, ['--build-sea=sea.json'], { cwd: DIST, stdio: 'inherit' });
-for (const tmp of ['app.pack', 'launcher.cjs', 'sea.json']) rmSync(join(DIST, tmp));
+for (const tmp of ['app.pack', 'launcher.cjs', 'sea.json', ...(base ? [base] : [])]) rmSync(join(DIST, tmp));
 if (process.platform !== 'win32') chmodSync(join(DIST, exe), 0o755);
 if (process.platform === 'darwin') {
   try {
